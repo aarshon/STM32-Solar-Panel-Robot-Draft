@@ -1,0 +1,12 @@
+../Core/Src/vesc.c:27:17:crc16	24	static
+../Core/Src/vesc.c:42:13:sendFrame	40	static
+../Core/Src/vesc.c:64:6:VESC_SetDuty	24	static
+../Core/Src/vesc.c:79:6:VESC_SetDutyRight	24	static
+../Core/Src/vesc.c:96:6:VESC_TankDrive	32	static
+../Core/Src/vesc.c:115:6:VESC_Stop	8	static
+../Core/Src/vesc.c:166:6:VESC_SetValuesCallback	16	static
+../Core/Src/vesc.c:172:6:VESC_RequestValues	16	static
+../Core/Src/vesc.c:179:23:read_i16	16	static
+../Core/Src/vesc.c:184:23:read_i32	16	static
+../Core/Src/vesc.c:193:13:decode_get_values	96	static
+../Core/Src/vesc.c:241:6:VESC_ProcessRxByte	32	static

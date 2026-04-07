@@ -1,0 +1,2 @@
+../Core/Src/keypad.c:58:6:KEYPAD_Init	40	static
+../Core/Src/keypad.c:101:9:KEYPAD_Scan	24	static

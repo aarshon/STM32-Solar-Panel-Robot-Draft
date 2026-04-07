@@ -1,0 +1,9 @@
+../Core/Src/lcd.c:18:13:lcd_write_nibble	16	static
+../Core/Src/lcd.c:42:13:lcd_send_byte	16	static
+../Core/Src/lcd.c:49:13:lcd_command	16	static
+../Core/Src/lcd.c:56:13:lcd_char	16	static
+../Core/Src/lcd.c:66:6:LCD_Init	8	static
+../Core/Src/lcd.c:84:6:LCD_Clear	8	static
+../Core/Src/lcd.c:91:6:LCD_SetCursor	24	static
+../Core/Src/lcd.c:98:6:LCD_Print	16	static
+../Core/Src/lcd.c:106:6:LCD_WriteStatus	40	static

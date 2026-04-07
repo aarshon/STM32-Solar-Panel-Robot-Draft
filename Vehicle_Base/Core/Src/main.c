@@ -22,8 +22,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "lcd.h"
+#include "ssd1306.h"
+#include "ssd1306_fonts.h"
 #include "vesc.h"
+#include "keypad.h"
+#include "ui.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,13 +78,15 @@ UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
+static uint8_t vescRxByte;
 static uint8_t  rxByte;            /* 1-byte buffer for USART1 RX interrupt */
 static char     cmdBuf[32];        /* Accumulate characters here             */
 static uint8_t  cmdIdx   = 0;
 static uint8_t  cmdReady = 0;      /* Set to 1 when '\n' is received         */
 static char     pendingCmd[32];    /* Snapshot of complete command            */
-static uint32_t lastCmdTime  = 0;  /* Timestamp of last valid command         */
-static uint8_t  motorRunning = 0;  /* 1 while motors are commanded to move    */
+uint32_t lastCmdTime  = 0;         /* Non-static: accessed by ui.c           */
+uint8_t  motorRunning = 0;         /* Non-static: accessed by ui.c           */
+static uint8_t  pendingKey = KEY_NONE;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -100,7 +105,26 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/* USER CODE BEGIN 0 */
+
+/*
+ * WriteStatus — clears the display and writes two lines of text.
+ * line1 appears at the top (Y=0), line2 below (Y=20).
+ * Uses Font_7x10 from the ssd1306 library.
+ */
+static void WriteStatus(const char *line1, const char *line2)
+{
+    ssd1306_Fill(Black);
+    ssd1306_SetCursor(0, 0);
+    ssd1306_WriteString((char *)line1, Font_7x10, White);
+    ssd1306_SetCursor(0, 20);
+    ssd1306_WriteString((char *)line2, Font_7x10, White);
+    ssd1306_UpdateScreen();
+}
+
+void my_vesc_callback(mc_values *val)
+{
+    UI_TelemetryUpdate(val);
+}
 
 /*
  * HAL_UART_RxCpltCallback
@@ -129,6 +153,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         /* Re-arm interrupt for next byte */
         HAL_UART_Receive_IT(&huart1, &rxByte, 1);
     }
+    if (huart->Instance == USART2)
+{
+    VESC_ProcessRxByte(vescRxByte);
+    HAL_UART_Receive_IT(&huart2, &vescRxByte, 1);
+}
+
 }
 
 /*
@@ -143,7 +173,7 @@ static void processCommand(const char *cmd)
     {
         VESC_Stop();
         motorRunning = 0;
-        LCD_WriteStatus("!!! E-STOP !!!", "All motors OFF");
+        UI_ForceRedraw();
         HAL_UART_Transmit(&huart3, (uint8_t *)"[BASE] ESTOP\r\n", 14, 20);
         return;
     }
@@ -152,7 +182,7 @@ static void processCommand(const char *cmd)
     {
         VESC_Stop();
         motorRunning = 0;
-        LCD_WriteStatus("STOPPED", "Speed: 0");
+        UI_ForceRedraw();
         HAL_UART_Transmit(&huart3, (uint8_t *)"[BASE] Stop\r\n", 13, 20);
         return;
     }
@@ -174,28 +204,32 @@ static void processCommand(const char *cmd)
     {
         VESC_TankDrive(DIR_FORWARD, speed);
         motorRunning = 1;
-        LCD_WriteStatus(">>> FORWARD >>>", speedStr);
+        UI_ForceRedraw();
+        WriteStatus(">>> FORWARD >>>", speedStr);
         snprintf(dbg, sizeof(dbg), "[BASE] FWD spd=%d\r\n", speed);
     }
     else if (strncmp(cmd, "BCK", 3) == 0)
     {
         VESC_TankDrive(DIR_BACKWARD, speed);
         motorRunning = 1;
-        LCD_WriteStatus("<<< BACKWARD <<", speedStr);
+        UI_ForceRedraw();
+        WriteStatus("<<< BACKWARD <<", speedStr);
         snprintf(dbg, sizeof(dbg), "[BASE] BCK spd=%d\r\n", speed);
     }
     else if (strncmp(cmd, "LFT", 3) == 0)
     {
         VESC_TankDrive(DIR_LEFT, speed);
         motorRunning = 1;
-        LCD_WriteStatus("<-- TURN LEFT  ", speedStr);
+        UI_ForceRedraw();
+        WriteStatus("<-- TURN LEFT  ", speedStr);
         snprintf(dbg, sizeof(dbg), "[BASE] LFT spd=%d\r\n", speed);
     }
     else if (strncmp(cmd, "RGT", 3) == 0)
     {
         VESC_TankDrive(DIR_RIGHT, speed);
         motorRunning = 1;
-        LCD_WriteStatus("  TURN RIGHT -->", speedStr);
+        UI_ForceRedraw();
+        WriteStatus("  TURN RIGHT -->", speedStr);
         snprintf(dbg, sizeof(dbg), "[BASE] RGT spd=%d\r\n", speed);
     }
     else
@@ -247,7 +281,13 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  ssd1306_Init();
+  KEYPAD_Init();
+  UI_Init();
 
+  VESC_SetValuesCallback(my_vesc_callback);
+  HAL_UART_Receive_IT(&huart1, &rxByte, 1);
+  HAL_UART_Receive_IT(&huart2, &vescRxByte, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -257,6 +297,35 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    /* Keypad scan */
+    pendingKey = KEYPAD_Scan();
+
+    /* UI update — handles key input and redraws current screen */
+    UI_Update(pendingKey);
+
+    /* UART command processing (still active alongside keypad) */
+    if (cmdReady)
+    {
+        cmdReady = 0;
+        processCommand(pendingCmd);
+    }
+
+    /* Motor timeout watchdog */
+    if (motorRunning && (HAL_GetTick() - lastCmdTime > CMD_TIMEOUT_MS))
+    {
+        VESC_Stop();
+        motorRunning = 0;
+        UI_ForceRedraw();
+    }
+
+    /* VESC telemetry poll every 200 ms */
+    static uint32_t lastPoll = 0;
+    if (HAL_GetTick() - lastPoll >= 200)
+    {
+        lastPoll = HAL_GetTick();
+        VESC_RequestValues();
+    }
   }
   /* USER CODE END 3 */
 }
@@ -572,11 +641,19 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LD1_Pin|LD3_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LD1_Pin|GPIO_PIN_10|GPIO_PIN_11|LD3_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOF, GPIO_PIN_13|GPIO_PIN_14, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_9|GPIO_PIN_11, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
@@ -587,12 +664,26 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LD1_Pin LD3_Pin */
-  GPIO_InitStruct.Pin = LD1_Pin|LD3_Pin;
+  /*Configure GPIO pins : LD1_Pin PB10 PB11 LD3_Pin */
+  GPIO_InitStruct.Pin = LD1_Pin|GPIO_PIN_10|GPIO_PIN_11|LD3_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PF13 PF14 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PE9 PE11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
   /*Configure GPIO pin : USB_PowerSwitchOn_Pin */
   GPIO_InitStruct.Pin = USB_PowerSwitchOn_Pin;
