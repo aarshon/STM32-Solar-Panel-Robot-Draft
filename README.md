@@ -1,6 +1,6 @@
 # STM32 Solar Panel Robot — Vehicle Base
 
-A differential-drive solar panel robot controlled by an STM32 Nucleo-F767ZI. The system accepts drive commands from both a local 3×4 membrane keypad and a remote Raspberry Pi over UART. A 128×64 OLED displays a multi-screen UI with live VESC telemetry. Two VESC ESCs (FlipSky FESC 6.7) drive the left and right motors independently via a tank-drive scheme.
+A differential-drive solar panel robot controlled by an STM32 Nucleo-F767ZI. The system accepts drive commands from both a local 3×4 membrane keypad and a remote Raspberry Pi over UART. A 128×64 OLED displays a multi-screen UI with live VESC telemetry. 1 VESC ESCs (FlipSky FESC 6.7) drive the left and right motors via a tank-drive scheme.
 
 ---
 
