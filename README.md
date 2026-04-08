@@ -1,6 +1,6 @@
 # STM32 Solar Panel Robot — Integrated Firmware
 
-A differential-drive solar panel inspection robot.  A Raspberry Pi reads a physical joystick and streams control data over MQTT → an ESP8266 bridges it to UART → an STM32 Nucleo-F767ZI drives two VESC ESCs.  A 128×64 OLED displays live motor telemetry and Pi connection status.  A 3×4 keypad provides local fallback control.
+A differential-drive solar panel inspection robot.  A Raspberry Pi reads a physical joystick and streams control data over MQTT → an ESP8266 bridges it to UART → an STM32 Nucleo-F767ZI drives two VESC ESCs.  A 128×64 OLED displays live motor telemetry and Pi connection status.  A 3×4 keypad provides local fallback control. (Robotic Arm logic to be implemented later).
 
 ---
 
