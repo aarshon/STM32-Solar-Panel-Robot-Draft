@@ -1,0 +1,5 @@
+../Drivers/CMSIS/Include/bldc_interface_uart.c:42:6:bldc_interface_uart_init	16	static
+../Drivers/CMSIS/Include/bldc_interface_uart.c:57:6:bldc_interface_uart_process_byte	16	static
+../Drivers/CMSIS/Include/bldc_interface_uart.c:65:6:bldc_interface_uart_run_timer	8	static
+../Drivers/CMSIS/Include/bldc_interface_uart.c:78:13:process_packet	16	static
+../Drivers/CMSIS/Include/bldc_interface_uart.c:91:13:send_packet_bldc_interface	16	static

@@ -1,0 +1,2 @@
+../Drivers/CMSIS/Include/ChibiOS_3.0.2/testhal/STM32/STM32F4xx/IRQ_STORM_FPU/extfunc.c:17:7:ff1	16	static
+../Drivers/CMSIS/Include/ChibiOS_3.0.2/testhal/STM32/STM32F4xx/IRQ_STORM_FPU/extfunc.c:21:7:ff2	24	static
