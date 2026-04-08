@@ -1,14 +1,18 @@
 /*
  * ui.h  —  Multi-screen OLED UI
- * Board : STM32 Nucleo-F767ZI  (Vehicle Base)
+ * Board : STM32 Nucleo-F767ZI  (Vehicle Base — merged firmware)
  *
  * Screens:
  *   SPLASH         → animated power-on screen (1.5 s auto-advance)
  *   MAIN_MENU      → 4-item menu with cursor
  *   STATUS_MONITOR → live VESC telemetry (RPM, V, A, duty, temp, fault)
- *   MOTOR_CONTROL  → drive robot directly from keypad
- *   ROBOT_ARM      → placeholder
+ *                    + Pi MQTT connection status (LIVE / TIMEOUT)
+ *   MOTOR_CONTROL  → drive robot directly from keypad (local fallback)
+ *   ROBOT_ARM      → placeholder (arm team will implement)
  *   INFO           → uptime, firmware label, fault log
+ *
+ * Note: mc_values and mc_fault_code come from datatypes.h (bldc_interface
+ * library) via vesc.h.  Do NOT include datatypes.h directly here.
  */
 
 #ifndef UI_H

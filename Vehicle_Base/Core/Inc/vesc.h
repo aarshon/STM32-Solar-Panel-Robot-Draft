@@ -1,127 +1,128 @@
 /*
- * vesc.h  —  VESC Motor Driver (FlipSky FESC 6.7)
- * Board : STM32 Nucleo-F767ZI  (Vehicle Base)
+ * vesc.h  —  VESC Motor Driver Abstraction Layer
+ * Board   : STM32 Nucleo-F767ZI  (Vehicle Base — merged firmware)
  *
- * Sends duty-cycle commands over UART using the VESC binary protocol.
- * Left motor  → direct UART frame (COMM_SET_DUTY)
- * Right motor → CAN-forwarded frame (COMM_FORWARD_CAN) sent on same UART
+ * This header defines the motor control API used throughout the project.
+ * Internally, the implementation (vesc.c) uses the VESC bldc_interface library
+ * (Benjamin Vedder, GPLv3) rather than the hand-rolled binary protocol used in
+ * the original Vehicle_Base firmware.
  *
- * Also supports requesting and receiving real-time telemetry via
- * COMM_GET_VALUES (0x04). Call VESC_RequestValues() to trigger a fetch;
- * the parsed result is delivered to the callback set by
- * VESC_SetValuesCallback().
+ * Physical wiring:
+ *   Left  VESC  ← UART5  (PC12 TX)  direct connection
+ *   Right VESC  ← UART7  (PE8  TX)  direct connection
  *
- * Frame layout:
- *   [0x02] [payload_len] [payload...] [CRC16_hi] [CRC16_lo] [0x03]
+ * Telemetry is requested from the LEFT VESC only (UART5 RX) and is surfaced
+ * to callers via a callback registered with VESC_SetValuesCallback().
+ *
+ * Motor data types (mc_values, mc_fault_code) come from datatypes.h which is
+ * part of the bldc_interface library.  Do NOT re-define them here.
  */
 
 #ifndef VESC_H
 #define VESC_H
 
 #include "stm32f7xx_hal.h"
+#include "datatypes.h"   /* mc_values, mc_fault_code — from bldc_interface lib */
 #include <stdint.h>
 
-/* ---- UART handle wired to VESC ----------------------------------------- */
-extern UART_HandleTypeDef huart2;           /* PD5(TX) / PD6(RX)           */
-#define VESC_UART   huart2
+/* =========================================================================
+ * UART handles used by this driver (defined in main.c)
+ * ========================================================================= */
+extern UART_HandleTypeDef huart5;   /* Left  VESC — TX commands + RX telemetry */
+extern UART_HandleTypeDef huart7;   /* Right VESC — TX commands only           */
 
-/* ---- VESC protocol command codes --------------------------------------- */
-#define VESC_CMD_GET_VALUES  0x04           /* Request real-time telemetry  */
-#define VESC_CMD_SET_DUTY    0x05           /* Set duty cycle directly      */
-#define VESC_CMD_FWD_CAN     0x21           /* Forward command via CAN bus  */
+/* =========================================================================
+ * Demo-safety duty cycle limit
+ *
+ * bldc_interface_set_duty_cycle() expects a value in [-1.0, +1.0].
+ * We cap at ±0.50 (50 % throttle) during the demo to prevent runaway.
+ * Ian's mixing math outputs values in [-1,+1] and they are multiplied by
+ * this constant before being sent to the VESCs.
+ * ========================================================================= */
+#define VESC_MAX_DUTY_FLOAT   0.50f
 
-/* ---- Duty cycle limits (unit = 1/100 000 of full scale) ---------------- */
-#define VESC_MAX_DUTY        50000
-#define VESC_MIN_DUTY       -50000
-
-/* ---- CAN device ID of the right-side VESC ----------------------------- */
-#define VESC_CAN_ID_RIGHT    1
-
-/* ---- Direction constants ----------------------------------------------- */
+/* =========================================================================
+ * Tank-drive direction constants (used by keypad UI + VESC_TankDrive)
+ * ========================================================================= */
 #define DIR_STOP     0
 #define DIR_FORWARD  1
 #define DIR_BACKWARD 2
 #define DIR_LEFT     3
 #define DIR_RIGHT    4
 
-/* ---- mc_fault_code enum (matches VESC firmware) ------------------------ */
-typedef enum {
-    FAULT_CODE_NONE = 0,
-    FAULT_CODE_OVER_VOLTAGE,
-    FAULT_CODE_UNDER_VOLTAGE,
-    FAULT_CODE_DRV,
-    FAULT_CODE_ABS_OVER_CURRENT,
-    FAULT_CODE_OVER_TEMP_FET,
-    FAULT_CODE_OVER_TEMP_MOTOR,
-    FAULT_CODE_GATE_DRIVER_OVER_VOLTAGE,
-    FAULT_CODE_GATE_DRIVER_UNDER_VOLTAGE,
-    FAULT_CODE_MCU_UNDER_VOLTAGE,
-    FAULT_CODE_BOOTING_FROM_WATCHDOG_RESET,
-    FAULT_CODE_ENCODER_SPI_FAULT,
-    FAULT_CODE_ENCODER_SINCOS_BELOW_MIN_AMPLITUDE,
-    FAULT_CODE_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE,
-    FAULT_CODE_FLASH_CORRUPTION,
-    FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_1,
-    FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2,
-    FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3,
-    FAULT_CODE_UNBALANCED_CURRENTS,
-    FAULT_CODE_BRK,
-    FAULT_CODE_RESOLVER_LOT,
-    FAULT_CODE_RESOLVER_DOS,
-    FAULT_CODE_RESOLVER_LOS,
-    FAULT_CODE_FLASH_CORRUPTION_APP_CFG,
-    FAULT_CODE_FLASH_CORRUPTION_MC_CFG,
-    FAULT_CODE_ENCODER_NO_MAGNET,
-    FAULT_CODE_ENCODER_MAGNET_TOO_STRONG
-} mc_fault_code;
-
-/* ---- Real-time telemetry struct (mirrors mc_values in VESC firmware) --- */
-typedef struct {
-    float           temp_mos;           /* FET temperature        (°C)       */
-    float           temp_motor;         /* Motor temperature      (°C)       */
-    float           current_motor;      /* Motor phase current    (A)        */
-    float           current_in;         /* Input/battery current  (A)        */
-    float           id;                 /* D-axis current         (A)        */
-    float           iq;                 /* Q-axis current         (A)        */
-    float           duty_now;           /* Duty cycle             (-1…+1)    */
-    float           rpm;                /* Electrical RPM                    */
-    float           v_in;              /* Input voltage          (V)        */
-    float           amp_hours;          /* Consumed charge        (Ah)       */
-    float           amp_hours_charged;  /* Regenerated charge     (Ah)       */
-    float           watt_hours;         /* Consumed energy        (Wh)       */
-    float           watt_hours_charged; /* Regenerated energy     (Wh)       */
-    int32_t         tachometer;         /* Tachometer value       (counts)   */
-    int32_t         tachometer_abs;     /* Absolute tachometer    (counts)   */
-    mc_fault_code   fault_code;         /* Active fault code                 */
-    float           position;           /* PID position           (deg)      */
-    uint8_t         vesc_id;            /* Responding VESC CAN ID            */
-    float           vd;                 /* D-axis voltage         (V)        */
-    float           vq;                 /* Q-axis voltage         (V)        */
-} mc_values;
-
-/* ---- Callback type for received telemetry ------------------------------ */
-/* Define your own function matching this signature and pass it to
- * VESC_SetValuesCallback(). It will be called from VESC_ProcessRxByte()
- * each time a complete, CRC-verified GET_VALUES response is decoded.
+/* =========================================================================
+ * Callback type for received VESC telemetry
+ *
+ * Register a function of this type with VESC_SetValuesCallback().
+ * It will be called from inside the UART5 RX interrupt each time a complete,
+ * CRC-verified COMM_GET_VALUES response is decoded.
  *
  * Example:
- *   void my_callback(mc_values *val) {
- *       float duty_pct = val->duty_now * 100.0f;
+ *   void on_vesc_values(mc_values *v) {
+ *       float rpm = v->rpm;
  *   }
- */
+ *   VESC_SetValuesCallback(on_vesc_values);
+ * ========================================================================= */
 typedef void (*vesc_values_cb_t)(mc_values *val);
 
-/* ---- Public API -------------------------------------------------------- */
+/* =========================================================================
+ * Public API
+ * ========================================================================= */
 
-/* Motor control */
-void VESC_SetDuty      (int32_t duty);
-void VESC_SetDutyRight (int32_t duty);
-void VESC_TankDrive    (uint8_t direction, uint8_t speed);
-void VESC_Stop         (void);
+/**
+ * VESC_Init — must be called once after all UARTs are initialised.
+ * Sets up the bldc_interface library with the left-VESC send callback.
+ */
+void VESC_Init(void);
 
-/* Telemetry */
-void VESC_SetValuesCallback (vesc_values_cb_t cb);   /* Register callback   */
-void VESC_RequestValues     (void);                  /* Send 0x04 request   */
-void VESC_ProcessRxByte     (uint8_t byte);          /* Feed one RX byte    */
+/**
+ * VESC_TankDrive — drive both motors from a direction + speed byte.
+ *
+ * direction : DIR_FORWARD / DIR_BACKWARD / DIR_LEFT / DIR_RIGHT / DIR_STOP
+ * speed     : 0-255 (linearly mapped to 0 – VESC_MAX_DUTY_FLOAT)
+ *
+ * Left/right differential steering:
+ *   FWD  → left=+s, right=+s
+ *   BCK  → left=-s, right=-s
+ *   LFT  → left=-s, right=+s   (spin left in place)
+ *   RGT  → left=+s, right=-s   (spin right in place)
+ */
+void VESC_TankDrive(uint8_t direction, uint8_t speed);
+
+/**
+ * VESC_JoystickDrive — drive from pre-normalised joystick floats (Ian's math).
+ *
+ * x : steering  ∈ [-1.0, +1.0]  (negative = left,  positive = right)
+ * y : throttle  ∈ [-1.0, +1.0]  (negative = back,  positive = forward)
+ *
+ * Mixing:  left_duty  = clamp(y + x) * VESC_MAX_DUTY_FLOAT
+ *          right_duty = clamp(y - x) * VESC_MAX_DUTY_FLOAT
+ */
+void VESC_JoystickDrive(float x, float y);
+
+/**
+ * VESC_Stop — send zero duty to both motors immediately.
+ */
+void VESC_Stop(void);
+
+/**
+ * VESC_SetValuesCallback — register telemetry callback.
+ * The callback is invoked from UART5 RX ISR context when a
+ * COMM_GET_VALUES response has been fully decoded and CRC-verified.
+ */
+void VESC_SetValuesCallback(vesc_values_cb_t cb);
+
+/**
+ * VESC_RequestValues — request telemetry from the left VESC.
+ * Call at ~5 Hz (every 200 ms) in the main loop.
+ */
+void VESC_RequestValues(void);
+
+/**
+ * VESC_ProcessRxByte — feed one byte received on UART5 (left VESC) to the
+ * packet decoder.  Call this from inside HAL_UART_RxCpltCallback when
+ * huart->Instance == UART5.
+ */
+void VESC_ProcessRxByte(uint8_t byte);
 
 #endif /* VESC_H */

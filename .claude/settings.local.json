@@ -7,7 +7,8 @@
       "Read(//Users/aarshongeorge/.npm/bin/**)",
       "Read(//usr/local/bin/**)",
       "Read(//Users/aarshongeorge/.local/bin/**)",
-      "Bash(npm list:*)"
+      "Bash(npm list:*)",
+      "Bash(xargs -I{} basename {})"
     ]
   }
 }

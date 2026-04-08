@@ -19,6 +19,18 @@
  *   Row 4:     Y = 49  (Font_6x8 fits in remaining 15 px)
  */
 
+/*
+ * ui.c  —  Multi-screen OLED UI (updated for merged firmware)
+ *
+ * Changes from original Vehicle_Base ui.c:
+ *   - fault_name() updated to match the 7 fault codes in datatypes.h
+ *     (bldc_interface library), removing GATE_DRIVER_* and MCU_UNDER_VOLTAGE
+ *     which are not present in that enum.
+ *   - STATUS_MONITOR screen now shows Pi connection status (LIVE / TIMEOUT)
+ *     based on the CMD_TIMEOUT_MS watchdog in main.c.
+ *   - MOTOR_CONTROL screen now reflects joystick drive direction and shows
+ *     CTRL: REMOTE when driven by Pi vs CTRL: KEYPAD when using keypad.
+ */
 #include "ui.h"
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
@@ -82,21 +94,22 @@ static void ui_speed_bar(uint8_t speed)
 
 /* =========================================================================
  * Helper: short fault name (3 chars + null)
+ *
+ * Only the 7 fault codes defined in datatypes.h (bldc_interface library)
+ * are handled here.  The extended fault codes from the original vesc.h
+ * (GATE_DRIVER_*, MCU_UNDER_VOLTAGE) do not exist in this enum.
  * ========================================================================= */
 static const char *fault_name(mc_fault_code fc)
 {
     switch (fc) {
-        case FAULT_CODE_NONE:                    return "OK ";
-        case FAULT_CODE_OVER_VOLTAGE:            return "OV ";
-        case FAULT_CODE_UNDER_VOLTAGE:           return "UV ";
-        case FAULT_CODE_DRV:                     return "DRV";
-        case FAULT_CODE_ABS_OVER_CURRENT:        return "OC ";
-        case FAULT_CODE_OVER_TEMP_FET:           return "OTF";
-        case FAULT_CODE_OVER_TEMP_MOTOR:         return "OTM";
-        case FAULT_CODE_MCU_UNDER_VOLTAGE:       return "MUV";
-        case FAULT_CODE_GATE_DRIVER_OVER_VOLTAGE:return "GOV";
-        case FAULT_CODE_GATE_DRIVER_UNDER_VOLTAGE:return "GUV";
-        default:                                 return "ERR";
+        case FAULT_CODE_NONE:             return "OK ";   /* No fault               */
+        case FAULT_CODE_OVER_VOLTAGE:     return "OV ";   /* Input over-voltage     */
+        case FAULT_CODE_UNDER_VOLTAGE:    return "UV ";   /* Input under-voltage    */
+        case FAULT_CODE_DRV:              return "DRV";   /* DRV8302 gate driver    */
+        case FAULT_CODE_ABS_OVER_CURRENT: return "OC ";   /* Absolute over-current  */
+        case FAULT_CODE_OVER_TEMP_FET:    return "OTF";   /* FET over-temperature   */
+        case FAULT_CODE_OVER_TEMP_MOTOR:  return "OTM";   /* Motor over-temperature */
+        default:                          return "ERR";   /* Unknown fault code     */
     }
 }
 
@@ -202,19 +215,35 @@ static void ui_draw_main_menu(void)
     ssd1306_UpdateScreen();
 }
 
-/* ---- Status Monitor ---------------------------------------------------- */
+/* ---- Status Monitor ────────────────────────────────────────────────────
+ *
+ * Layout (128×64, Font_7x10 for rows 0-3, Font_6x8 for rows 4-5):
+ *
+ *   Row 0  (y= 0): "STATUS   [OK]"  or  "STATUS   [ERR]" (inverted badge)
+ *        divider at y=11
+ *   Row 1  (y=13): "RPM: +12345  V:13.2"
+ *   Row 2  (y=25): "I: 4.5A  Duty:  45%"
+ *   Row 3  (y=37): "Tmp:32C  Flt: OK "
+ *        divider at y=48
+ *   Row 4  (y=50): "Pi:LIVE  [234ms ago]"  or  "Pi:TIMEOUT"  (Font_6x8)
+ *   Row 5  (y=57): "CTRL:REMOTE"  or  "CTRL:KEYPAD"           (Font_6x8)
+ *
+ * Pi connection status is derived from the motor watchdog variables in
+ * main.c (lastCmdTime, motorRunning).  A "LIVE" label means a joystick
+ * frame arrived within the last CMD_TIMEOUT_MS (500 ms).
+ * ──────────────────────────────────────────────────────────────────────── */
 static void ui_draw_status_monitor(void)
 {
     char buf[22];
 
     ssd1306_Fill(Black);
 
-    /* Title + fault badge */
+    /* ── Title + fault badge ── */
     if (ui.tele.valid && ui.tele.fault_code != FAULT_CODE_NONE)
     {
         ssd1306_SetCursor(0, 0);
         ssd1306_WriteString("STATUS", Font_7x10, White);
-        /* Inverted [ERR] badge */
+        /* Inverted [ERR] badge on the right side */
         ssd1306_FillRectangle(90, 0, 127, 10, White);
         ssd1306_SetCursor(91, 0);
         ssd1306_WriteString("[ERR]", Font_7x10, Black);
@@ -226,35 +255,75 @@ static void ui_draw_status_monitor(void)
     }
     ssd1306_Line(0, 11, 127, 11, White);
 
+    /* ── Waiting state — no VESC telemetry yet ── */
     if (!ui.tele.valid)
     {
-        ssd1306_SetCursor(10, 28);
+        ssd1306_SetCursor(4, 24);
         ssd1306_WriteString("Waiting for VESC", Font_7x10, White);
-        ssd1306_UpdateScreen();
-        return;
+        ssd1306_SetCursor(10, 38);
+        ssd1306_WriteString("(no telemetry)", Font_7x10, White);
+        /* Still show Pi status even without VESC telemetry */
+    }
+    else
+    {
+        /* ── Row 1: RPM + voltage ── */
+        snprintf(buf, sizeof(buf), "RPM:%+.0f V:%.1f",
+                 ui.tele.rpm, ui.tele.v_in);
+        ssd1306_SetCursor(0, 13);
+        ssd1306_WriteString(buf, Font_7x10, White);
+
+        /* ── Row 2: Motor current + duty cycle ── */
+        snprintf(buf, sizeof(buf), "I:%.1fA  Dty:%.0f%%",
+                 ui.tele.current_motor, ui.tele.duty_pct);
+        ssd1306_SetCursor(0, 25);
+        ssd1306_WriteString(buf, Font_7x10, White);
+
+        /* ── Row 3: FET temperature + fault code ── */
+        snprintf(buf, sizeof(buf), "Tmp:%.0fC Flt:%s",
+                 ui.tele.temp_mos, fault_name(ui.tele.fault_code));
+        ssd1306_SetCursor(0, 37);
+        ssd1306_WriteString(buf, Font_7x10, White);
     }
 
-    /* RPM */
-    snprintf(buf, sizeof(buf), "RPM: %+.0f", ui.tele.rpm);
-    ssd1306_SetCursor(0, 13);
-    ssd1306_WriteString(buf, Font_7x10, White);
+    /* ── Divider before connection status ── */
+    ssd1306_Line(0, 48, 127, 48, White);
 
-    /* Voltage + duty */
-    snprintf(buf, sizeof(buf), "V:%.1f  D:%.0f%%",
-             ui.tele.v_in, ui.tele.duty_pct);
-    ssd1306_SetCursor(0, 25);
-    ssd1306_WriteString(buf, Font_7x10, White);
+    /* ── Row 4: Pi / MQTT connection status ──
+     *
+     * lastCmdTime is updated by main.c every time a valid ESP8266 frame
+     * arrives.  If more than 500 ms have elapsed, the watchdog has fired
+     * and motors are stopped — we show "TIMEOUT" in inverted colour.
+     */
+    uint32_t now     = HAL_GetTick();
+    uint32_t elapsed = now - lastCmdTime;
 
-    /* Current */
-    snprintf(buf, sizeof(buf), "Cur: %.1fA", ui.tele.current_motor);
-    ssd1306_SetCursor(0, 37);
-    ssd1306_WriteString(buf, Font_7x10, White);
+    if (motorRunning || elapsed < 500u)
+    {
+        /* Pi is connected and sending joystick data */
+        snprintf(buf, sizeof(buf), "Pi:LIVE %4lums", (unsigned long)elapsed);
+        ssd1306_SetCursor(0, 50);
+        ssd1306_WriteString(buf, Font_6x8, White);
+    }
+    else
+    {
+        /* No command received recently — watchdog has fired */
+        ssd1306_FillRectangle(0, 49, 127, 57, White);   /* inverted background */
+        ssd1306_SetCursor(0, 50);
+        ssd1306_WriteString("Pi:TIMEOUT  STOPPED", Font_6x8, Black);
+    }
 
-    /* Temp + fault */
-    snprintf(buf, sizeof(buf), "T:%.0fC Flt:%s",
-             ui.tele.temp_mos, fault_name(ui.tele.fault_code));
-    ssd1306_SetCursor(0, 49);
-    ssd1306_WriteString(buf, Font_6x8, White);
+    /* ── Row 5: Control source indicator ── */
+    ssd1306_SetCursor(0, 57);
+    if (motorRunning)
+    {
+        /* Robot is being driven by the Raspberry Pi joystick */
+        ssd1306_WriteString("CTRL:REMOTE", Font_6x8, White);
+    }
+    else
+    {
+        /* Either idle or driven locally by keypad */
+        ssd1306_WriteString("CTRL:KEYPAD/IDLE", Font_6x8, White);
+    }
 
     ssd1306_UpdateScreen();
 }
