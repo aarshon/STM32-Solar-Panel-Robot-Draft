@@ -3,7 +3,11 @@
     "allow": [
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(gh api:*)",
-      "WebFetch(domain:api.github.com)"
+      "WebFetch(domain:api.github.com)",
+      "Read(//Users/aarshongeorge/.npm/bin/**)",
+      "Read(//usr/local/bin/**)",
+      "Read(//Users/aarshongeorge/.local/bin/**)",
+      "Bash(npm list:*)"
     ]
   }
 }
