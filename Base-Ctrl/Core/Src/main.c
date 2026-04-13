@@ -156,8 +156,11 @@ int main(void)
 
   float time_cur;
   float time_las = 0.0;
-  float throttle_des = 0.0;
-  float throttle_cur = 0.0;
+  float input_x, input_y;
+  float throttle_des1 = 0.0;
+  float throttle_des2 = 0.0;
+  float throttle_cur1 = 0.0;
+  float throttle_cur2 = 0.0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -169,19 +172,44 @@ int main(void)
 	  if (input == 1) {
 		  input = 0;
 		  for (int i = 0; i < 4; i++) {
-			  if (esp_buff[i] == 0xAA && esp_buff[i+1] > 0x80) {
-				  throttle_des = (float)(esp_buff[i+1] - 0x80) / (float)(0xFF-0x80) * 0.5;
+        if (esp_buff[i] == 0xAA) {
+          //joystick x input value
+          if (esp_buff[i+1] > 0x80) {input_x = (float)(esp_buff[i+1] - 0x80) / (float)(0xFF-0x80);}
+          else if (esp_buff[i+1] <= 0x70) {input_x = (float)(esp_buff[i+1] - 0x70) / (float)(0x70-0x00);}
+          else {input_x = 0.0;}
+          //joystick y input value
+          if (esp_buff[i+2] > 0x80) {input_y = (float)(esp_buff[i+2] - 0x80) / (float)(0xFF-0x80);}
+          else if (esp_buff[i+2] <= 0x70) {input_y = (float)(esp_buff[i+2] - 0x70) / (float)(0x70-0x00);}
+          else {input_y = 0.0;}
+          
+          throttle_des1 = (input_x + input_y) / 2.0;
+          throttle_des2 = (input_x - input_y) / 2.0;
+          break;
+        }
+			  /*if (esp_buff[i] == 0xAA && esp_buff[i+1] > 0x80) {
+				  throttle_des1 = (float)(esp_buff[i+1] - 0x80) / (float)(0xFF-0x80) * 0.5;
 				  break;
 			  } else if (esp_buff[i] == 0xAA && esp_buff[i+1] <= 0x80) {
 				  throttle_des = 0.0;
 				  throttle_cur = throttle_des;
 				  break;
-			  }
+			  }*/
 		  }
 	  }
 
 	  if (time_cur - time_las >= .01) {
-		  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+      time_las = time_cur;
+
+		  if (throttle_cur1 != 0.0) {bldc_interface_set_duty_cycle(&vesc1, throttle_cur1);}
+      if (throttle_cur2 != 0.0) {bldc_interface_set_duty_cycle(&vesc2, throttle_cur2);}
+
+      if (throttle_cur1 < throttle_des1) {throttle_cur1 += 0.001;}
+      else if (throttle_cur1 > throttle_des1) {throttle_cur1 -= 0.001;}
+      
+      if (throttle_cur2 < throttle_des2) {throttle_cur2 += 0.001;}
+      else if (throttle_cur2 > throttle_des2) {throttle_cur2 -= 0.001;}
+
+      /*HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
 		  if (throttle_cur != 0.0) {
 			  bldc_interface_set_duty_cycle(&vesc1, throttle_cur);
 			  bldc_interface_set_duty_cycle(&vesc2, throttle_cur);
@@ -191,32 +219,8 @@ int main(void)
 			  throttle_cur += 0.001;
 		  } else if (throttle_cur > throttle_des) {
 			  throttle_cur -= 0.001;
-		  } /* else if (throttle_des == 0.0) {
-			  throttle_cur = 0.0;
 		  }*/
 	  }
-	  /*
-	  if (ThrottleValue < 0.5 && ramp == 0) {
-		  ThrottleValue += 0.01;
-		  bldc_interface_set_duty_cycle(ThrottleValue);
-		  HAL_Delay(100);
-	  } else {
-		  ramp = 1;
-		  HAL_Delay(5000);
-		  bldc_interface_set_duty_cycle(0.0);
-	  }
-
-
-
-	  if (ThrottleValue < 0.50 && ramp == 0) {
-		ThrottleValue += 0.05;
-		bldc_interface_set_duty_cycle(ThrottleValue);
-	  } else {
-		bldc_interface_set_duty_cycle(0.0);
-		ramp = 1;
-	  }
-	  HAL_Delay(1000);
-	  */
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -704,8 +708,6 @@ void send_packet(vesc_uart_t *ctx, unsigned char *data, unsigned int len) {
 void vesc_uart_init(void) {
   vesc1.uart = &huart5;
   vesc2.uart = &huart7;
-
-
 }
 
 /**
