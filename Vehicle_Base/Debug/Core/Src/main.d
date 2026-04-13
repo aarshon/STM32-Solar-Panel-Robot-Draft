@@ -30,8 +30,9 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart_ex.h \
  ../Core/Inc/ssd1306.h ../Core/Inc/ssd1306_conf.h \
  ../Core/Inc/ssd1306_fonts.h ../Core/Inc/ssd1306.h ../Core/Inc/vesc.h \
- ../Core/Inc/keypad.h ../Core/Inc/ui.h ../Core/Inc/vesc.h \
- ../Core/Inc/keypad.h
+ ../Core/Inc/datatypes.h ../Core/Inc/keypad.h ../Core/Inc/ui.h \
+ ../Core/Inc/vesc.h ../Core/Inc/keypad.h \
+ ../Core/Inc/bldc_interface_uart.h ../Core/Inc/packet.h
 ../Core/Inc/main.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal.h:
 ../Core/Inc/stm32f7xx_hal_conf.h:
@@ -67,7 +68,10 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Core/Inc/ssd1306_fonts.h:
 ../Core/Inc/ssd1306.h:
 ../Core/Inc/vesc.h:
+../Core/Inc/datatypes.h:
 ../Core/Inc/keypad.h:
 ../Core/Inc/ui.h:
 ../Core/Inc/vesc.h:
 ../Core/Inc/keypad.h:
+../Core/Inc/bldc_interface_uart.h:
+../Core/Inc/packet.h:

@@ -27,7 +27,9 @@ Core/Src/vesc.o: ../Core/Src/vesc.c ../Core/Inc/vesc.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pwr.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pwr_ex.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart.h \
- ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart_ex.h
+ ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart_ex.h \
+ ../Core/Inc/datatypes.h ../Core/Inc/bldc_interface.h \
+ ../Core/Inc/bldc_interface_uart.h ../Core/Inc/packet.h
 ../Core/Inc/vesc.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal.h:
 ../Core/Inc/stm32f7xx_hal_conf.h:
@@ -58,3 +60,7 @@ Core/Src/vesc.o: ../Core/Src/vesc.c ../Core/Inc/vesc.h \
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pwr_ex.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart_ex.h:
+../Core/Inc/datatypes.h:
+../Core/Inc/bldc_interface.h:
+../Core/Inc/bldc_interface_uart.h:
+../Core/Inc/packet.h:
