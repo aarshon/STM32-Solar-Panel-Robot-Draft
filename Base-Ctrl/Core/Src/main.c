@@ -24,17 +24,14 @@
 /* USER CODE BEGIN Includes */
 #include "bldc_interface.h"
 #include "bldc_interface_uart.h"
+#include "vesc_uart.h"
 #include "math.h"
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-uint16_t ms = 0;
-uint16_t ss = 0;
-unsigned char vesc_buff;
-unsigned char esp_buff[4];
-int input = 0;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -81,7 +78,13 @@ UART_HandleTypeDef huart6;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
-
+vesc_uart_t vesc1;
+vesc_uart_t vesc2;
+uint16_t ms = 0;
+uint16_t ss = 0;
+unsigned char vesc_buff;
+unsigned char esp_buff[4];
+int input = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -96,18 +99,15 @@ static void MX_UART7_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_TIM9_Init(void);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void send_packet_l(unsigned char *data, unsigned int len) {
-	HAL_UART_Transmit_IT(&huart5, data, len);
-}
-void send_packet_r(unsigned char *data, unsigned int len) {
-	HAL_UART_Transmit_IT(&huart7, data, len);
-}
+void send_packet(vesc_uart_t *ctx, unsigned char *data, unsigned int len);
+void vesc_uart_init(void);
 /* USER CODE END 0 */
 
 /**
@@ -149,7 +149,8 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM9_Init();
   /* USER CODE BEGIN 2 */
-  bldc_interface_uart_init(send_packet_l);
+  vesc_uart_init();
+  bldc_interface_uart_init(send_packet);
   HAL_UART_Receive_IT(&huart5, &vesc_buff, 1);
   HAL_UART_Receive_IT(&huart4, (uint8_t*)esp_buff, 4);
 
@@ -182,13 +183,14 @@ int main(void)
 	  if (time_cur - time_las >= .01) {
 		  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
 		  if (throttle_cur != 0.0) {
-			  bldc_interface_set_duty_cycle(throttle_cur);
+			  bldc_interface_set_duty_cycle(&vesc1, throttle_cur);
+			  bldc_interface_set_duty_cycle(&vesc2, throttle_cur);
 		  }
 		  time_las = time_cur;
 		  if (throttle_cur < throttle_des) {
-			  throttle_cur += 0.01;
+			  throttle_cur += 0.001;
 		  } else if (throttle_cur > throttle_des) {
-			  throttle_cur -= 0.01;
+			  throttle_cur -= 0.001;
 		  } /* else if (throttle_des == 0.0) {
 			  throttle_cur = 0.0;
 		  }*/
@@ -687,6 +689,25 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/**
+ *  @brief  Send command packet to VESC via UART
+ *  @param  *ctx: pointer to packet context
+ *  @param  *data: pointer to data buffer
+ *  @param  len: length of data buffer
+ *  @retval None
+ *
+ */
+void send_packet(vesc_uart_t *ctx, unsigned char *data, unsigned int len) {
+	HAL_UART_Transmit_IT(ctx->uart, data, len);
+}
+
+void vesc_uart_init(void) {
+  vesc1.uart = &huart5;
+  vesc2.uart = &huart7;
+
+
+}
+
 /**
   * @brief  This function is executed upon completion of UART_RX interrupt
   * @param  *huart: pointer to uart instance
