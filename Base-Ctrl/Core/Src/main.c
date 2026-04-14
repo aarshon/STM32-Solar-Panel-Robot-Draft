@@ -24,7 +24,6 @@
 /* USER CODE BEGIN Includes */
 #include "bldc_interface.h"
 #include "bldc_interface_uart.h"
-#include "vesc_uart.h"
 #include "math.h"
 
 /* USER CODE END Includes */
@@ -36,7 +35,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define DUTY 1
+#define CURRENT 2
+#define BRAKE 3
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -78,8 +79,6 @@ UART_HandleTypeDef huart6;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
-vesc_uart_t vesc1;
-vesc_uart_t vesc2;
 uint16_t ms = 0;
 uint16_t ss = 0;
 unsigned char vesc_buff;
@@ -106,8 +105,10 @@ static void MX_TIM9_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void send_packet(vesc_uart_t *ctx, unsigned char *data, unsigned int len);
-void vesc_uart_init(void);
+void send_left(unsigned char *data, unsigned int len);
+void send_right(unsigned char *data, unsigned int len);
+void motorl(int type, float set);
+void motorr(int type, float set);
 /* USER CODE END 0 */
 
 /**
@@ -149,8 +150,7 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM9_Init();
   /* USER CODE BEGIN 2 */
-  vesc_uart_init();
-  bldc_interface_uart_init(send_packet);
+  bldc_interface_uart_init(send_left);
   HAL_UART_Receive_IT(&huart5, &vesc_buff, 1);
   HAL_UART_Receive_IT(&huart4, (uint8_t*)esp_buff, 4);
 
@@ -200,8 +200,8 @@ int main(void)
 	  if (time_cur - time_las >= .01) {
       time_las = time_cur;
 
-		  if (throttle_cur1 != 0.0) {bldc_interface_set_duty_cycle(&vesc1, throttle_cur1);}
-      if (throttle_cur2 != 0.0) {bldc_interface_set_duty_cycle(&vesc2, throttle_cur2);}
+	  if (throttle_cur1 != 0.0) {motorl(DUTY, throttle_cur1);}
+      if (throttle_cur2 != 0.0) {motorr(DUTY, throttle_cur2);}
 
       if (throttle_cur1 < throttle_des1) {throttle_cur1 += 0.001;}
       else if (throttle_cur1 > throttle_des1) {throttle_cur1 -= 0.001;}
@@ -695,19 +695,58 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 /**
  *  @brief  Send command packet to VESC via UART
- *  @param  *ctx: pointer to packet context
  *  @param  *data: pointer to data buffer
- *  @param  len: length of data buffer
+ *          len: length of data buffer
  *  @retval None
  *
  */
-void send_packet(vesc_uart_t *ctx, unsigned char *data, unsigned int len) {
-	HAL_UART_Transmit_IT(ctx->uart, data, len);
+void send_left(unsigned char *data, unsigned int len) {
+	HAL_UART_Transmit_IT(&huart5, data, len);
+}
+void send_right(unsigned char *data, unsigned int len) {
+	HAL_UART_Transmit_IT(&huart7, data, len);
 }
 
-void vesc_uart_init(void) {
-  vesc1.uart = &huart5;
-  vesc2.uart = &huart7;
+/**
+ *  @brief  Send throttle commands to each vesc side
+ *  @param  tyoe: int designating which throttle control method to use
+ *          set: throttle value to be set
+ *  @retval None
+ */
+void motorl(int type, float set) {
+	bldc_interface_init(send_left);
+	switch (type) {
+		case 0:
+			bldc_interface_send_alive();
+			break;
+		case 1:
+			bldc_interface_set_duty_cycle(set);
+			break;
+		case 2:
+			bldc_interface_set_current(set);
+			break;
+		case 3:
+			bldc_interface_set_current_brake(set);
+			break;
+	}
+}
+void motorr(int type, float set) {
+	bldc_interface_init(send_right);
+	switch (type) {
+		case 0:
+			bldc_interface_send_alive();
+			break;
+		case 1:
+			bldc_interface_set_duty_cycle(set);
+			break;
+		case 2:
+			bldc_interface_set_current(set);
+			break;
+		case 3:
+			bldc_interface_set_current_brake(set);
+			break;
+	}
+	bldc_interface_init(send_left);
 }
 
 /**
