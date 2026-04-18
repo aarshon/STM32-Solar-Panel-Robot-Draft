@@ -39,7 +39,7 @@ typedef struct {
 	unsigned char crc_high;
 } PACKET_STATE_t;
 
-PACKET_STATE_t handler_states[PACKET_HANDLERS];
+static PACKET_STATE_t handler_states[PACKET_HANDLERS];
 
 void packet_init(void (*s_func)(unsigned char *data, unsigned int len),
 		void (*p_func)(unsigned char *data, unsigned int len), int handler_num) {
