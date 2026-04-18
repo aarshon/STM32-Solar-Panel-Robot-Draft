@@ -68,6 +68,7 @@
 #include "keypad.h"
 #include "ui.h"
 #include "bldc_interface_uart.h"   /* bldc_interface_uart_run_timer() for packet timeout */
+#include "stepper.h"               /* NEMA 17 arm motor (TIM3 PWM + ADC pot) */
 #include <string.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -115,9 +116,14 @@ ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT] __attribute__((section(".TxDecr
 
 ETH_TxPacketConfig TxConfig;
 
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 ETH_HandleTypeDef heth;
 
 I2C_HandleTypeDef hi2c1;
+
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart5;
 UART_HandleTypeDef huart1;
@@ -161,18 +167,30 @@ uint8_t  motorRunning = 0;   /* 1 = motors have been commanded to move     */
 /* ── Keypad ───────────────────────────────────────────────────────────────*/
 static uint8_t pendingKey = KEY_NONE;
 
+/* ── Stepper / ADC DMA ────────────────────────────────────────────────────
+ * CubeIDE generates MX_ADC1_Init() and MX_DMA_Init() from the .ioc.
+ * This buffer is the destination for the DMA circular transfer:
+ *   adc_dma_buf[0] = PC0 (ADC1_IN10) = CW  throttle pot  → Motor 1 clockwise
+ *   adc_dma_buf[1] = PA3 (ADC1_IN3)  = CCW throttle pot  → Motor 1 counter-CW
+ * Values are 12-bit [0, 4095]; rest (≤STEPPER_DEADBAND) = stopped.
+ * The DMA keeps this buffer live without any CPU involvement. */
+uint16_t adc_dma_buf[2] = {0u, 0u};
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MPU_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ETH_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_UART5_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 /* Forward declarations for manually-added UART init functions (not in .ioc) */
 static void MX_UART4_Init(void);
@@ -287,12 +305,15 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ETH_Init();
   MX_USART3_UART_Init();
   MX_I2C1_Init();
   MX_UART5_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_ADC1_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
   /* ── Initialise peripherals not in the .ioc (UART4 = ESP8266, UART7 = right VESC) */
@@ -307,6 +328,10 @@ int main(void)
   /* ── Initialise VESC motor driver (bldc_interface, left-motor callback) ── */
   VESC_Init();
   VESC_SetValuesCallback(on_vesc_values);
+
+  /* ── Initialise stepper arm motor and start ADC DMA ── */
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_dma_buf, 2);
+  STEPPER_Init();
 
   /* ── Arm UART interrupt receivers ──
    * Each HAL_UART_Receive_IT call enables the RX interrupt for 1 byte.
@@ -327,6 +352,17 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+        /* ── 0. Stepper arm update ──
+         *
+         * STEPPER_Update() reads the latest DMA-filled ADC values and:
+         *   • Picks target freq from whichever throttle pot is past deadband
+         *       adc_dma_buf[0] → CW  pot  (PC0 / ADC1_IN10)
+         *       adc_dma_buf[1] → CCW pot  (PA3 / ADC1_IN3)
+         *   • Ramps current frequency toward target (avoids missed steps)
+         *   • Updates TIM3 ARR/CCR1 for the new frequency in hardware
+         *   • Toggles DIR only when motor is at rest (safe reversal) */
+        STEPPER_Update(adc_dma_buf[0], adc_dma_buf[1]);
 
         /* ── 1. Keypad scan ── */
         pendingKey = KEYPAD_Scan();
@@ -466,6 +502,101 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_10;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* Fix 1 — rank 2 should sample PA3 (ADC1_IN3) for the CCW throttle pot.
+   * CubeIDE leaves rank 2 = ADC_CHANNEL_10 (same as rank 1) by default,
+   * and the .ioc still has PC3/IN13 wired — override to ADC_CHANNEL_3. */
+  {
+      ADC_ChannelConfTypeDef sfix = {0};
+      sfix.Channel      = ADC_CHANNEL_3;
+      sfix.Rank         = ADC_REGULAR_RANK_2;
+      sfix.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+      if (HAL_ADC_ConfigChannel(&hadc1, &sfix) != HAL_OK)
+      {
+          Error_Handler();
+      }
+  }
+
+  /* Fix 2 — MX_USART2_UART_Init() (called earlier) puts PA3 into AF7
+   * (USART2_RX).  USART2 is unused in this firmware, so steal PA3 back
+   * and re-configure it as an analog input for ADC1_IN3. */
+  {
+      __HAL_RCC_GPIOA_CLK_ENABLE();
+      GPIO_InitTypeDef pa3 = {0};
+      pa3.Pin  = GPIO_PIN_3;
+      pa3.Mode = GPIO_MODE_ANALOG;
+      pa3.Pull = GPIO_NOPULL;
+      HAL_GPIO_Init(GPIOA, &pa3);
+  }
+
+  /* Fix 3 — CubeIDE set DMAContinuousRequests = DISABLE, which stops the
+   * DMA after the first 2 conversions.  Enable it so circular DMA keeps
+   * the adc_dma_buf[] refreshed indefinitely. */
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
   * @brief ETH Initialization Function
   * @param None
   * @retval None
@@ -559,6 +690,65 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 95;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 4999;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 2499;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+  HAL_TIM_MspPostInit(&htim3);
 
 }
 
@@ -703,6 +893,22 @@ static void MX_USART3_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -735,6 +941,9 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(STEP_DIR_GPIO_Port, STEP_DIR_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : USER_Btn_Pin */
   GPIO_InitStruct.Pin = USER_Btn_Pin;
@@ -776,6 +985,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USB_OverCurrent_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : STEP_DIR_Pin */
+  GPIO_InitStruct.Pin = STEP_DIR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(STEP_DIR_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pins : USB_SOF_Pin USB_DM_Pin USB_DP_Pin */
   GPIO_InitStruct.Pin = USB_SOF_Pin|USB_DM_Pin|USB_DP_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -804,6 +1020,27 @@ static void MX_GPIO_Init(void)
  */
 static void MX_UART4_Init(void)
 {
+    /* HAL_UART_MspInit() has no UART4 case (not in .ioc), so configure
+     * clock, GPIO, and NVIC manually here before calling HAL_UART_Init(). */
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    __HAL_RCC_UART4_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+
+    /* PA1 → UART4_RX (AF8).
+     * NOTE: PA1 is also ETH_REF_CLK on the Nucleo.  If Ethernet is disabled
+     * in the .ioc this is safe.  If Ethernet is needed, move UART4_RX to
+     * PC11 (also AF8) and update the ESP8266 wiring accordingly. */
+    GPIO_InitStruct.Pin       = GPIO_PIN_1;
+    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull      = GPIO_PULLUP;
+    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    HAL_NVIC_SetPriority(UART4_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(UART4_IRQn);
+
     huart4.Instance            = UART4;
     huart4.Init.BaudRate       = 115200;
     huart4.Init.WordLength     = UART_WORDLENGTH_8B;
@@ -827,6 +1064,23 @@ static void MX_UART4_Init(void)
  */
 static void MX_UART7_Init(void)
 {
+    /* HAL_UART_MspInit() has no UART7 case (not in .ioc), so configure
+     * clock and GPIO manually here before calling HAL_UART_Init(). */
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    __HAL_RCC_UART7_CLK_ENABLE();
+    __HAL_RCC_GPIOE_CLK_ENABLE();
+
+    /* PE8 → UART7_TX (AF8).  TX only — right VESC receives no telemetry. */
+    GPIO_InitStruct.Pin       = GPIO_PIN_8;
+    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull      = GPIO_NOPULL;
+    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF8_UART7;
+    HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+    /* No NVIC needed for TX-only — HAL_UART_Transmit_IT() enables TX interrupt
+     * internally when called. */
+
     huart7.Instance            = UART7;
     huart7.Init.BaudRate       = 115200;
     huart7.Init.WordLength     = UART_WORDLENGTH_8B;

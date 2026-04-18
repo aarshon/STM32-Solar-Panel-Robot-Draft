@@ -1,0 +1,4 @@
+../Core/Src/screen_stepper.c:27:16:abs32_local	1
+../Core/Src/screen_stepper.c:30:16:pot_pct	2
+../Core/Src/screen_stepper.c:39:6:ScreenStepper_Draw	6
+../Core/Src/screen_stepper.c:108:24:ScreenStepper_HandleKey	3

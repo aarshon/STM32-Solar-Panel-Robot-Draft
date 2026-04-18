@@ -19,6 +19,8 @@ Core/Src/ui.o: ../Core/Src/ui.c ../Core/Inc/ui.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_dma.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_dma_ex.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_cortex.h \
+ ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_adc.h \
+ ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_adc_ex.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_eth.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_flash.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_flash_ex.h \
@@ -26,11 +28,14 @@ Core/Src/ui.o: ../Core/Src/ui.c ../Core/Inc/ui.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_i2c_ex.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pwr.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pwr_ex.h \
+ ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_tim.h \
+ ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_tim_ex.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart.h \
  ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart_ex.h \
  ../Core/Inc/vesc.h ../Core/Inc/datatypes.h ../Core/Inc/keypad.h \
  ../Core/Inc/ssd1306.h ../Core/Inc/ssd1306_conf.h \
- ../Core/Inc/ssd1306_fonts.h ../Core/Inc/ssd1306.h ../Core/Inc/vesc.h
+ ../Core/Inc/ssd1306_fonts.h ../Core/Inc/ssd1306.h ../Core/Inc/vesc.h \
+ ../Core/Inc/screen_stepper.h
 ../Core/Inc/ui.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal.h:
 ../Core/Inc/stm32f7xx_hal_conf.h:
@@ -52,6 +57,8 @@ Core/Src/ui.o: ../Core/Src/ui.c ../Core/Inc/ui.h \
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_dma.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_dma_ex.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_cortex.h:
+../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_adc.h:
+../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_adc_ex.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_eth.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_flash.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_flash_ex.h:
@@ -59,6 +66,8 @@ Core/Src/ui.o: ../Core/Src/ui.c ../Core/Inc/ui.h \
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_i2c_ex.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pwr.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_pwr_ex.h:
+../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_tim.h:
+../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_tim_ex.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal_uart_ex.h:
 ../Core/Inc/vesc.h:
@@ -69,3 +78,4 @@ Core/Src/ui.o: ../Core/Src/ui.c ../Core/Inc/ui.h \
 ../Core/Inc/ssd1306_fonts.h:
 ../Core/Inc/ssd1306.h:
 ../Core/Inc/vesc.h:
+../Core/Inc/screen_stepper.h:

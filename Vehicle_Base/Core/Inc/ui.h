@@ -4,11 +4,12 @@
  *
  * Screens:
  *   SPLASH         → animated power-on screen (1.5 s auto-advance)
- *   MAIN_MENU      → 4-item menu with cursor
+ *   MAIN_MENU      → 5-item menu with cursor
  *   STATUS_MONITOR → live VESC telemetry (RPM, V, A, duty, temp, fault)
  *                    + Pi MQTT connection status (LIVE / TIMEOUT)
  *   MOTOR_CONTROL  → drive robot directly from keypad (local fallback)
  *   ROBOT_ARM      → placeholder (arm team will implement)
+ *   STEPPER        → live stepper #1 status (freq, dir, pot inputs)
  *   INFO           → uptime, firmware label, fault log
  *
  * Note: mc_values and mc_fault_code come from datatypes.h (bldc_interface
@@ -27,10 +28,11 @@
 typedef enum {
     SCREEN_SPLASH = 0,
     SCREEN_MAIN_MENU,
-    SCREEN_STATUS_MONITOR,
-    SCREEN_MOTOR_CONTROL,
-    SCREEN_ROBOT_ARM,
-    SCREEN_INFO,
+    SCREEN_STATUS_MONITOR,   /* menu cursor 0 */
+    SCREEN_MOTOR_CONTROL,    /* menu cursor 1 */
+    SCREEN_ROBOT_ARM,        /* menu cursor 2 */
+    SCREEN_STEPPER,          /* menu cursor 3 */
+    SCREEN_INFO,             /* menu cursor 4 */
     SCREEN_COUNT
 } UI_Screen_t;
 
@@ -59,7 +61,7 @@ typedef struct {
     UI_Screen_t   currentScreen;
 
     /* Main menu */
-    uint8_t       menuCursor;      /* 0–3                                     */
+    uint8_t       menuCursor;      /* 0–4                                     */
 
     /* Motor control */
     uint8_t       motorSpeed;      /* 0–255, default 150                      */

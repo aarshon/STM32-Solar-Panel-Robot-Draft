@@ -1,0 +1,8 @@
+../Core/Src/stepper.c:66:23:abs32	1
+../Core/Src/stepper.c:69:23:clamp32	3
+../Core/Src/stepper.c:80:13:apply_to_hardware	4
+../Core/Src/stepper.c:117:6:STEPPER_Init	1
+../Core/Src/stepper.c:134:16:map_pot_to_freq	1
+../Core/Src/stepper.c:147:6:STEPPER_Update	11
+../Core/Src/stepper.c:207:6:STEPPER_Stop	1
+../Core/Src/stepper.c:214:6:STEPPER_GetStatus	2

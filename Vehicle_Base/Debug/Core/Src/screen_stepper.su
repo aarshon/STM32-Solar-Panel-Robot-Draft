@@ -1,0 +1,4 @@
+../Core/Src/screen_stepper.c:27:16:abs32_local	16	static
+../Core/Src/screen_stepper.c:30:16:pot_pct	24	static
+../Core/Src/screen_stepper.c:39:6:ScreenStepper_Draw	80	static
+../Core/Src/screen_stepper.c:108:24:ScreenStepper_HandleKey	24	static

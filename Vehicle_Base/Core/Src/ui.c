@@ -35,6 +35,7 @@
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
 #include "vesc.h"
+#include "screen_stepper.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -180,26 +181,32 @@ static void ui_draw_splash(void)
     ssd1306_UpdateScreen();
 }
 
-/* ---- Main Menu --------------------------------------------------------- */
+/* ---- Main Menu ---------------------------------------------------------
+ *
+ * 5-item menu.  Font_7x10 rows at 10 px pitch — 5 × 10 = 50 px fits in the
+ * 52 px area below the title divider (y=13..62).  Row strings are padded
+ * to 17 glyphs so the highlight bar looks uniform across all entries.
+ */
 static void ui_draw_main_menu(void)
 {
-    static const char *items[4] = {
+    static const char *items[5] = {
         "1. Status Monitor",
         "2. Motor Control ",
         "3. Robot Arm     ",
-        "4. Info          "
+        "4. Stepper Motor ",
+        "5. Info          "
     };
-    static const uint8_t row_y[4] = { 13, 25, 37, 49 };
+    static const uint8_t row_y[5] = { 13, 23, 33, 43, 53 };
 
     ssd1306_Fill(Black);
     ui_title("== MAIN MENU ==");
 
-    for (uint8_t i = 0; i < 4; i++)
+    for (uint8_t i = 0; i < 5; i++)
     {
         if (i == ui.menuCursor)
         {
             /* Highlight selected row: white background, black text */
-            ssd1306_FillRectangle(0, row_y[i] - 1, 127, row_y[i] + 10, White);
+            ssd1306_FillRectangle(0, row_y[i] - 1, 127, row_y[i] + 9, White);
             ssd1306_SetCursor(0, row_y[i]);
             ssd1306_WriteString(">", Font_7x10, Black);
             ssd1306_SetCursor(7, row_y[i]);
@@ -462,14 +469,17 @@ static void ui_handle_main_menu(uint8_t key)
             if (ui.menuCursor > 0) { ui.menuCursor--; ui.needsRedraw = 1; }
             break;
         case '8':
-            if (ui.menuCursor < 3) { ui.menuCursor++; ui.needsRedraw = 1; }
+            if (ui.menuCursor < 4) { ui.menuCursor++; ui.needsRedraw = 1; }
             break;
         case '5':
         case '#':
+            /* Enter highlighted item.  Menu cursor 0..4 maps 1:1 to the
+             * enum range SCREEN_STATUS_MONITOR..SCREEN_INFO. */
             ui_set_screen((UI_Screen_t)(SCREEN_STATUS_MONITOR + ui.menuCursor));
             break;
         case '1': ui_set_screen(SCREEN_STATUS_MONITOR); break;
         case '3': ui_set_screen(SCREEN_MOTOR_CONTROL);  break;
+        case '9': ui_set_screen(SCREEN_STEPPER);        break;
         case '7': ui_set_screen(SCREEN_INFO);            break;
         default: break;
     }
@@ -563,6 +573,17 @@ static void ui_handle_robot_arm(uint8_t key)
     }
 }
 
+/* Stepper screen — delegate to screen_stepper module, then translate its
+ * action enum into a ui_set_screen() call.  This keeps screen_stepper.c
+ * independent of UI_Screen_t. */
+static void ui_handle_stepper(uint8_t key)
+{
+    ScreenStepper_Action_t act = ScreenStepper_HandleKey(key);
+    if (act == SCREEN_STEPPER_ACTION_BACK) {
+        ui_set_screen(SCREEN_MAIN_MENU);
+    }
+}
+
 static void ui_handle_info(uint8_t key)
 {
     uint8_t k = key & 0x7Fu;
@@ -633,6 +654,7 @@ void UI_Update(uint8_t key)
             case SCREEN_STATUS_MONITOR: ui_handle_status_monitor(key); break;
             case SCREEN_MOTOR_CONTROL:  ui_handle_motor_control(key);  break;
             case SCREEN_ROBOT_ARM:      ui_handle_robot_arm(key);      break;
+            case SCREEN_STEPPER:        ui_handle_stepper(key);        break;
             case SCREEN_INFO:           ui_handle_info(key);           break;
             default: break;
         }
@@ -640,7 +662,8 @@ void UI_Update(uint8_t key)
 
     /* ---- Auto-refresh for live screens --------------------------------- */
     if (ui.currentScreen == SCREEN_STATUS_MONITOR ||
-        ui.currentScreen == SCREEN_INFO)
+        ui.currentScreen == SCREEN_INFO           ||
+        ui.currentScreen == SCREEN_STEPPER)
     {
         if ((now - ui.lastStatusRedrawMs) >= 200u) {
             ui.lastStatusRedrawMs = now;
@@ -667,6 +690,7 @@ void UI_Update(uint8_t key)
         case SCREEN_STATUS_MONITOR: ui_draw_status_monitor(); break;
         case SCREEN_MOTOR_CONTROL:  ui_draw_motor_control();  break;
         case SCREEN_ROBOT_ARM:      ui_draw_robot_arm();      break;
+        case SCREEN_STEPPER:        ScreenStepper_Draw();     break;
         case SCREEN_INFO:           ui_draw_info();           break;
         default: break;
     }
