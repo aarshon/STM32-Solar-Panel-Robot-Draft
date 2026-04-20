@@ -24,7 +24,10 @@
 /* USER CODE BEGIN Includes */
 #include "bldc_interface.h"
 #include "bldc_interface_uart.h"
-#include "math.h"
+#include "bldc_interface1.h"
+#include "bldc_interface_uart1.h"
+#include <math.h>
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -35,14 +38,17 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define DUTY 1
+#define DUTY 	1
 #define CURRENT 2
-#define BRAKE 3
+#define BRAKE 	3
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+#define XUP	0x7C
+#define XDN 0x72
+#define YUP 0x68
+#define YDN 0x5E
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -98,7 +104,6 @@ static void MX_UART7_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_TIM9_Init(void);
-
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -107,8 +112,6 @@ static void MX_TIM9_Init(void);
 /* USER CODE BEGIN 0 */
 void send_left(unsigned char *data, unsigned int len);
 void send_right(unsigned char *data, unsigned int len);
-void motorl(int type, float set);
-void motorr(int type, float set);
 /* USER CODE END 0 */
 
 /**
@@ -128,14 +131,16 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  bldc_interface_uart_init(send_left);
+  //bldc_interface_uart_init1(send_right);
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  HAL_UART_Receive_IT(&huart5, &vesc_buff, 1);
+  HAL_UART_Receive_IT(&huart4, (uint8_t*)esp_buff, 4);
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -150,10 +155,6 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM9_Init();
   /* USER CODE BEGIN 2 */
-  bldc_interface_uart_init(send_left);
-  HAL_UART_Receive_IT(&huart5, &vesc_buff, 1);
-  HAL_UART_Receive_IT(&huart4, (uint8_t*)esp_buff, 4);
-
   float time_cur;
   float time_las = 0.0;
   float input_x, input_y;
@@ -161,6 +162,9 @@ int main(void)
   float throttle_des2 = 0.0;
   float throttle_cur1 = 0.0;
   float throttle_cur2 = 0.0;
+  char esp_xy[15];
+  int step = 0;
+  memset(esp_xy, 0, sizeof(esp_xy));
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -172,20 +176,38 @@ int main(void)
 	  if (input == 1) {
 		  input = 0;
 		  for (int i = 0; i < 4; i++) {
-        if (esp_buff[i] == 0xAA) {
-          //joystick x input value
-          if (esp_buff[i+1] > 0x80) {input_x = (float)(esp_buff[i+1] - 0x80) / (float)(0xFF-0x80);}
-          else if (esp_buff[i+1] <= 0x70) {input_x = (float)(esp_buff[i+1] - 0x70) / (float)(0x70-0x00);}
-          else {input_x = 0.0;}
-          //joystick y input value
-          if (esp_buff[i+2] > 0x80) {input_y = (float)(esp_buff[i+2] - 0x80) / (float)(0xFF-0x80);}
-          else if (esp_buff[i+2] <= 0x70) {input_y = (float)(esp_buff[i+2] - 0x70) / (float)(0x70-0x00);}
-          else {input_y = 0.0;}
+			  if (esp_buff[i] == 0xAA) {
+				  esp_xy[0] = esp_buff[i+2];
+				  esp_xy[1] = esp_buff[i+1];
+
+				  //joystick x input value
+				  if (esp_buff[i+2] > XUP) {
+					  input_x = (float)(esp_buff[i+2] - XUP) / (float)(0xFF - XUP);
+				  }
+				  else if (esp_buff[i+2] < XDN) {
+					  input_x = (float)(esp_buff[i+2] - XDN) / (float)(XDN);
+				  }
+				  else {
+					  input_x = 0.0;
+				  }
+
+				  //joystick y input value
+				  if (esp_buff[i+1] > YUP) {
+					  input_y = (float)(esp_buff[i+1] - YUP) / (float)(0xFF - YUP);
+				  }
+				  else if (esp_buff[i+1] < YDN) {
+					  input_y = (float)(esp_buff[i+1] - YDN) / (float)(YDN);
+				  }
+				  else {
+					  input_y = 0.0;
+				  }
           
-          throttle_des1 = (input_x + input_y) / 2.0;
-          throttle_des2 = (input_x - input_y) / 2.0;
-          break;
-        }
+				  throttle_des1 = (input_x + input_y) / 2.0;
+				  throttle_des2 = (input_x - input_y) / 2.0;
+				  //sprintf(esp_xy, "%.2f|%.2f", throttle_cur1, throttle_cur2);
+				  //HAL_UART_Transmit(&huart3, &esp_xy, 10, 1000);
+				  break;
+			  }
 			  /*if (esp_buff[i] == 0xAA && esp_buff[i+1] > 0x80) {
 				  throttle_des1 = (float)(esp_buff[i+1] - 0x80) / (float)(0xFF-0x80) * 0.5;
 				  break;
@@ -198,18 +220,34 @@ int main(void)
 	  }
 
 	  if (time_cur - time_las >= .01) {
-      time_las = time_cur;
+		  time_las = time_cur;
 
-	  if (throttle_cur1 != 0.0) {motorl(DUTY, throttle_cur1);}
-      if (throttle_cur2 != 0.0) {motorr(DUTY, throttle_cur2);}
+		  switch (step) {
+		  case 0:
+			  if (throttle_des1 != 0.0) {bldc_interface_set_duty_cycle(throttle_cur1);}
+			  step = 1;
+			  break;
+		  case 1:
+			  bldc_interface_uart_init(send_right);
+			  step = 2;
+			  break;
+		  case 2:
+			  if (throttle_des2 != 0.0) {bldc_interface_set_duty_cycle(throttle_cur2);}
+			  step = 3;
+			  break;
+		  case 3:
+			  bldc_interface_uart_init(send_left);
+			  step = 0;
+			  break;
+		  }
 
-      if (throttle_cur1 < throttle_des1) {throttle_cur1 += 0.001;}
-      else if (throttle_cur1 > throttle_des1) {throttle_cur1 -= 0.001;}
+		  if (throttle_cur1 < throttle_des1) {throttle_cur1 += 0.001;}
+		  else if (throttle_cur1 > throttle_des1) {throttle_cur1 -= 0.001;}
       
-      if (throttle_cur2 < throttle_des2) {throttle_cur2 += 0.001;}
-      else if (throttle_cur2 > throttle_des2) {throttle_cur2 -= 0.001;}
+		  if (throttle_cur2 < throttle_des2) {throttle_cur2 += 0.001;}
+		  else if (throttle_cur2 > throttle_des2) {throttle_cur2 -= 0.001;}
 
-      /*HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+		  /*HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
 		  if (throttle_cur != 0.0) {
 			  bldc_interface_set_duty_cycle(&vesc1, throttle_cur);
 			  bldc_interface_set_duty_cycle(&vesc2, throttle_cur);
@@ -469,7 +507,7 @@ static void MX_UART5_Init(void)
 
   /* USER CODE END UART5_Init 1 */
   huart5.Instance = UART5;
-  huart5.Init.BaudRate = 115200;
+  huart5.Init.BaudRate = 19200;
   huart5.Init.WordLength = UART_WORDLENGTH_8B;
   huart5.Init.StopBits = UART_STOPBITS_1;
   huart5.Init.Parity = UART_PARITY_NONE;
@@ -504,7 +542,7 @@ static void MX_UART7_Init(void)
 
   /* USER CODE END UART7_Init 1 */
   huart7.Instance = UART7;
-  huart7.Init.BaudRate = 115200;
+  huart7.Init.BaudRate = 19200;
   huart7.Init.WordLength = UART_WORDLENGTH_8B;
   huart7.Init.StopBits = UART_STOPBITS_1;
   huart7.Init.Parity = UART_PARITY_NONE;
@@ -708,48 +746,6 @@ void send_right(unsigned char *data, unsigned int len) {
 }
 
 /**
- *  @brief  Send throttle commands to each vesc side
- *  @param  tyoe: int designating which throttle control method to use
- *          set: throttle value to be set
- *  @retval None
- */
-void motorl(int type, float set) {
-	bldc_interface_init(send_left);
-	switch (type) {
-		case 0:
-			bldc_interface_send_alive();
-			break;
-		case 1:
-			bldc_interface_set_duty_cycle(set);
-			break;
-		case 2:
-			bldc_interface_set_current(set);
-			break;
-		case 3:
-			bldc_interface_set_current_brake(set);
-			break;
-	}
-}
-void motorr(int type, float set) {
-	bldc_interface_init(send_right);
-	switch (type) {
-		case 0:
-			bldc_interface_send_alive();
-			break;
-		case 1:
-			bldc_interface_set_duty_cycle(set);
-			break;
-		case 2:
-			bldc_interface_set_current(set);
-			break;
-		case 3:
-			bldc_interface_set_current_brake(set);
-			break;
-	}
-	bldc_interface_init(send_left);
-}
-
-/**
   * @brief  This function is executed upon completion of UART_RX interrupt
   * @param  *huart: pointer to uart instance
   * @retval None
@@ -762,6 +758,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		HAL_UART_Receive_IT(&huart5, &vesc_buff, 1);
 	} else if (huart->Instance == UART4) {
 		input = 1;
+		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
 		HAL_UART_Receive_IT(&huart4, (uint8_t*)esp_buff, 4);
 	}
 }

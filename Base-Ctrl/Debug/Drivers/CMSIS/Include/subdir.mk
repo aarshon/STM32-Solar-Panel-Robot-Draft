@@ -6,24 +6,33 @@
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
 ../Drivers/CMSIS/Include/bldc_interface.c \
+../Drivers/CMSIS/Include/bldc_interface1.c \
 ../Drivers/CMSIS/Include/bldc_interface_uart.c \
+../Drivers/CMSIS/Include/bldc_interface_uart1.c \
 ../Drivers/CMSIS/Include/buffer.c \
 ../Drivers/CMSIS/Include/crc.c \
-../Drivers/CMSIS/Include/packet.c 
+../Drivers/CMSIS/Include/packet.c \
+../Drivers/CMSIS/Include/packet1.c 
 
 OBJS += \
 ./Drivers/CMSIS/Include/bldc_interface.o \
+./Drivers/CMSIS/Include/bldc_interface1.o \
 ./Drivers/CMSIS/Include/bldc_interface_uart.o \
+./Drivers/CMSIS/Include/bldc_interface_uart1.o \
 ./Drivers/CMSIS/Include/buffer.o \
 ./Drivers/CMSIS/Include/crc.o \
-./Drivers/CMSIS/Include/packet.o 
+./Drivers/CMSIS/Include/packet.o \
+./Drivers/CMSIS/Include/packet1.o 
 
 C_DEPS += \
 ./Drivers/CMSIS/Include/bldc_interface.d \
+./Drivers/CMSIS/Include/bldc_interface1.d \
 ./Drivers/CMSIS/Include/bldc_interface_uart.d \
+./Drivers/CMSIS/Include/bldc_interface_uart1.d \
 ./Drivers/CMSIS/Include/buffer.d \
 ./Drivers/CMSIS/Include/crc.d \
-./Drivers/CMSIS/Include/packet.d 
+./Drivers/CMSIS/Include/packet.d \
+./Drivers/CMSIS/Include/packet1.d 
 
 
 # Each subdirectory must supply rules for building sources it contributes
@@ -33,7 +42,7 @@ Drivers/CMSIS/Include/%.o Drivers/CMSIS/Include/%.su Drivers/CMSIS/Include/%.cyc
 clean: clean-Drivers-2f-CMSIS-2f-Include
 
 clean-Drivers-2f-CMSIS-2f-Include:
-	-$(RM) ./Drivers/CMSIS/Include/bldc_interface.cyclo ./Drivers/CMSIS/Include/bldc_interface.d ./Drivers/CMSIS/Include/bldc_interface.o ./Drivers/CMSIS/Include/bldc_interface.su ./Drivers/CMSIS/Include/bldc_interface_uart.cyclo ./Drivers/CMSIS/Include/bldc_interface_uart.d ./Drivers/CMSIS/Include/bldc_interface_uart.o ./Drivers/CMSIS/Include/bldc_interface_uart.su ./Drivers/CMSIS/Include/buffer.cyclo ./Drivers/CMSIS/Include/buffer.d ./Drivers/CMSIS/Include/buffer.o ./Drivers/CMSIS/Include/buffer.su ./Drivers/CMSIS/Include/crc.cyclo ./Drivers/CMSIS/Include/crc.d ./Drivers/CMSIS/Include/crc.o ./Drivers/CMSIS/Include/crc.su ./Drivers/CMSIS/Include/packet.cyclo ./Drivers/CMSIS/Include/packet.d ./Drivers/CMSIS/Include/packet.o ./Drivers/CMSIS/Include/packet.su
+	-$(RM) ./Drivers/CMSIS/Include/bldc_interface.cyclo ./Drivers/CMSIS/Include/bldc_interface.d ./Drivers/CMSIS/Include/bldc_interface.o ./Drivers/CMSIS/Include/bldc_interface.su ./Drivers/CMSIS/Include/bldc_interface1.cyclo ./Drivers/CMSIS/Include/bldc_interface1.d ./Drivers/CMSIS/Include/bldc_interface1.o ./Drivers/CMSIS/Include/bldc_interface1.su ./Drivers/CMSIS/Include/bldc_interface_uart.cyclo ./Drivers/CMSIS/Include/bldc_interface_uart.d ./Drivers/CMSIS/Include/bldc_interface_uart.o ./Drivers/CMSIS/Include/bldc_interface_uart.su ./Drivers/CMSIS/Include/bldc_interface_uart1.cyclo ./Drivers/CMSIS/Include/bldc_interface_uart1.d ./Drivers/CMSIS/Include/bldc_interface_uart1.o ./Drivers/CMSIS/Include/bldc_interface_uart1.su ./Drivers/CMSIS/Include/buffer.cyclo ./Drivers/CMSIS/Include/buffer.d ./Drivers/CMSIS/Include/buffer.o ./Drivers/CMSIS/Include/buffer.su ./Drivers/CMSIS/Include/crc.cyclo ./Drivers/CMSIS/Include/crc.d ./Drivers/CMSIS/Include/crc.o ./Drivers/CMSIS/Include/crc.su ./Drivers/CMSIS/Include/packet.cyclo ./Drivers/CMSIS/Include/packet.d ./Drivers/CMSIS/Include/packet.o ./Drivers/CMSIS/Include/packet.su ./Drivers/CMSIS/Include/packet1.cyclo ./Drivers/CMSIS/Include/packet1.d ./Drivers/CMSIS/Include/packet1.o ./Drivers/CMSIS/Include/packet1.su
 
 .PHONY: clean-Drivers-2f-CMSIS-2f-Include
 

@@ -1,0 +1,4 @@
+../Drivers/CMSIS/Include/packet1.c:44:6:packet_init1	24	static
+../Drivers/CMSIS/Include/packet1.c:50:6:packet_send_packet1	40	static
+../Drivers/CMSIS/Include/packet1.c:82:6:packet_timerfunc1	16	static
+../Drivers/CMSIS/Include/packet1.c:93:6:packet_process_byte1	24	static
