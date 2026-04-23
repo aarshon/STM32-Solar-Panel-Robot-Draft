@@ -22,6 +22,7 @@
 #include "stm32f7xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "estop.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -232,7 +233,31 @@ void DMA2_Stream0_IRQHandler(void)
 /* USER CODE BEGIN 1 */
 
 /**
- * @brief UART4 global interrupt — ESP8266 joystick frame receiver.
+ * @brief EXTI lines 10..15 — PF15 is wired to the e-stop button.
+ *        HAL dispatches to HAL_GPIO_EXTI_Callback() for the matched line.
+ */
+void EXTI15_10_IRQHandler(void)
+{
+    HAL_GPIO_EXTI_IRQHandler(ESTOP_Pin);
+}
+
+/**
+ * @brief HAL EXTI callback — invoked by HAL_GPIO_EXTI_IRQHandler after the
+ *        pending bit is cleared. Dispatches the e-stop latch.
+ *
+ * Button is active-low. We latch on any edge so a bounce/release still
+ * counts as "operator touched the button" — clearing is deliberate only
+ * via the keypad sequence.
+ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == ESTOP_Pin) {
+        ESTOP_FromISR();
+    }
+}
+
+/**
+ * @brief UART4 global interrupt — ESP32-S3 bridge RX byte.
  *        HAL calls HAL_UART_RxCpltCallback() in main.c when 1 byte arrives.
  */
 void UART4_IRQHandler(void)

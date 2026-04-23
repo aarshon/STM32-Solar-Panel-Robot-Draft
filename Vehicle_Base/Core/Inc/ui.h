@@ -5,12 +5,12 @@
  * Screens:
  *   SPLASH         → animated power-on screen (1.5 s auto-advance)
  *   MAIN_MENU      → 5-item menu with cursor
- *   STATUS_MONITOR → live VESC telemetry (RPM, V, A, duty, temp, fault)
- *                    + Pi MQTT connection status (LIVE / TIMEOUT)
+ *   STATUS_MONITOR → live VESC telemetry + Pi/slave link status + battery row
  *   MOTOR_CONTROL  → drive robot directly from keypad (local fallback)
  *   ROBOT_ARM      → placeholder (arm team will implement)
- *   STEPPER        → live stepper #1 status (freq, dir, pot inputs)
+ *   POWER          → battery voltage, SoC %, low/crit warning, VESC V cross-check
  *   INFO           → uptime, firmware label, fault log
+ *   ESTOP          → full-screen flashing banner while ESTOP_IsActive()
  *
  * Note: mc_values and mc_fault_code come from datatypes.h (bldc_interface
  * library) via vesc.h.  Do NOT include datatypes.h directly here.
@@ -31,8 +31,9 @@ typedef enum {
     SCREEN_STATUS_MONITOR,   /* menu cursor 0 */
     SCREEN_MOTOR_CONTROL,    /* menu cursor 1 */
     SCREEN_ROBOT_ARM,        /* menu cursor 2 */
-    SCREEN_STEPPER,          /* menu cursor 3 */
+    SCREEN_POWER,            /* menu cursor 3 */
     SCREEN_INFO,             /* menu cursor 4 */
+    SCREEN_ESTOP,            /* not menu-reachable; hard-jump only */
     SCREEN_COUNT
 } UI_Screen_t;
 
@@ -91,7 +92,23 @@ typedef struct {
     /* Status screen refresh gating */
     uint32_t      lastStatusRedrawMs;
 
+    /* Battery snapshot — refreshed from battery.c in the main loop */
+    float         battery_voltage;
+    uint8_t       battery_pct;
+
+    /* Slave-link state (ms since last heartbeat, last reported fault) */
+    uint32_t      slave_last_seen_ms;
+    uint8_t       slave_fault_code;
+
+    /* E-stop mirror — updated by main loop from estop.c */
+    uint8_t       estop_active;
+    uint8_t       estop_reason;
+
 } UI_State_t;
+
+/* Accessor for screen_*.c modules that need a peek at live state
+ * (telemetry snapshot, battery, etc.) without pulling in ui.c globals. */
+UI_State_t *UI_StatePtr(void);
 
 /* ---- Public API -------------------------------------------------------- */
 void    UI_Init             (void);
