@@ -38,23 +38,27 @@
 /**
  * send_packet_left — transmit a bldc_interface packet to the LEFT VESC.
  * Connected to UART5 (PC12 TX).  Called internally by bldc_interface.
+ *
+ * Blocking TX on purpose: bldc_interface / packet.c share a single tx_buffer
+ * in handler_states[0].  Non-blocking (IT/DMA) TX would let the next
+ * set_duty_* call overwrite that buffer mid-transmission — and would also
+ * return HAL_BUSY if the previous IT transfer is still draining, silently
+ * dropping packets.  At 115200 baud an 11-byte SET_DUTY frame clocks out in
+ * ~1 ms, which is fine for the ~1 kHz main loop.
  */
 static void send_packet_left(unsigned char *data, unsigned int len)
 {
-    /* HAL_UART_Transmit_IT: non-blocking; HAL manages the TX buffer pointer
-     * for the duration of the transmission.  The bldc_interface tx_buffer
-     * remains valid until the transfer completes because the next command
-     * will not be issued until the current one is sent (main-loop rate). */
-    HAL_UART_Transmit_IT(&huart5, data, len);
+    HAL_UART_Transmit(&huart5, data, len, 10 /* ms */);
 }
 
 /**
  * send_packet_right — transmit a bldc_interface packet to the RIGHT VESC.
  * Connected to UART7 (PE8 TX).  Called internally by bldc_interface.
+ * See send_packet_left above for why this is blocking.
  */
 static void send_packet_right(unsigned char *data, unsigned int len)
 {
-    HAL_UART_Transmit_IT(&huart7, data, len);
+    HAL_UART_Transmit(&huart7, data, len, 10 /* ms */);
 }
 
 /* =========================================================================

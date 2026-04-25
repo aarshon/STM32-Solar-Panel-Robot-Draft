@@ -1,0 +1,28 @@
+# STM32CubeIDE / Eclipse build output — regenerated on every build, never useful in git
+**/Debug/
+**/Release/
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.o
+*.d
+*.su
+*.cyclo
+
+# Eclipse-managed metadata that CubeIDE rewrites locally (keep .project, .cproject, .ioc)
+.metadata/
+.recommenders/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Python (Pi side)
+__pycache__/
+*.pyc
+.venv/
+venv/
