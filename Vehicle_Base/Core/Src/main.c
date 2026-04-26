@@ -31,7 +31,7 @@
  *
  * UART ASSIGNMENTS
  * ────────────────
- *   UART4  (PA1  RX) ← ESP8266 joystick frames  [0xAA][x][y][0x55]
+ *   UART4  (PC11 RX) ← ESP32-S3 SRR-CP frames
  *   UART5  (PC12 TX, PC11 RX) ↔ Left  VESC ESC (bldc_interface + telemetry)
  *   UART7  (PE8  TX) → Right VESC ESC (bldc_interface, TX only)
  *   USART3 (PD8  TX) → ST-Link virtual COM (debug output)
@@ -69,7 +69,6 @@
 #include "ui.h"
 #include "bldc_interface_uart.h"   /* bldc_interface_uart_run_timer() for packet timeout */
 #include "comm_protocol.h"
-#include "estop.h"
 #include "battery.h"
 #include <string.h>
 #include <stdio.h>
@@ -142,7 +141,7 @@ UART_HandleTypeDef huart3;
  * huart4 and huart7 were added manually (the .ioc only has UART5/USART3).
  * Placed here inside USER CODE so they survive CubeIDE code regeneration.
  * Their MSP (GPIO + clock init) is in MX_UART4_Init / MX_UART7_Init below. */
-UART_HandleTypeDef huart4;   /* UART4  (PA1 RX / PC10 TX) — ESP32-S3 bridge  */
+UART_HandleTypeDef huart4;   /* UART4  (PC11 RX / PC10 TX) — ESP32-S3 bridge */
 UART_HandleTypeDef huart7;   /* UART7  (PE8 TX)           — Right VESC ESC   */
 
 /* ── SRR-CP single-byte RX staging for each UART stream ──────────────────
@@ -186,14 +185,10 @@ static void MX_TIM3_Init(void);
 /* Forward declarations for manually-added peripheral init (not in .ioc) */
 static void MX_UART4_Init(void);
 static void MX_UART7_Init(void);
-static void MX_ESTOP_GPIO_Init(void);
 
 /* SRR-CP local handlers (registered with COMM_RegisterHandler after init) */
 static void handle_drive       (uint8_t src, const uint8_t *p, uint8_t len);
 static void handle_drive_stop  (uint8_t src, const uint8_t *p, uint8_t len);
-static void handle_estop_assert(uint8_t src, const uint8_t *p, uint8_t len);
-static void handle_estop_clear (uint8_t src, const uint8_t *p, uint8_t len);
-static void handle_estop_query (uint8_t src, const uint8_t *p, uint8_t len);
 static void handle_status_req  (uint8_t src, const uint8_t *p, uint8_t len);
 static void handle_heartbeat   (uint8_t src, const uint8_t *p, uint8_t len);
 static void handle_ping        (uint8_t src, const uint8_t *p, uint8_t len);
@@ -251,7 +246,6 @@ static void handle_drive(uint8_t src, const uint8_t *p, uint8_t len)
 {
     (void)src;
     if (len < 2) return;
-    if (ESTOP_IsActive()) return;  /* latch suppresses motor commands */
 
     uint8_t x_byte = p[0];
     uint8_t y_byte = p[1];
@@ -273,32 +267,6 @@ static void handle_drive_stop(uint8_t src, const uint8_t *p, uint8_t len)
     lastCmdTime  = HAL_GetTick();
 }
 
-static void handle_estop_assert(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)src;
-    uint8_t reason = (len >= 1) ? p[0] : FAULT_ESTOP_SOFTWARE;
-    /* Someone else on the bus raised e-stop — latch locally too. */
-    ESTOP_AssertSoftware(reason);
-}
-
-static void handle_estop_clear(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)src; (void)p; (void)len;
-    /* Only honour remote clears when we're already latched; the local ESTOP
-     * button still overrides via ESTOP_IsActive() until the operator runs the
-     * keypad sequence. Remote CLEAR is informational only here. */
-}
-
-static void handle_estop_query(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)p; (void)len;
-    uint8_t reply[3];
-    reply[0] = FIELD_ESTOP_STATE;
-    reply[1] = ESTOP_IsActive() ? 1u : 0u;
-    reply[2] = ESTOP_Reason();
-    COMM_Send(src, CMD_STATUS_REPLY, reply, 3);
-}
-
 static void handle_status_req(uint8_t src, const uint8_t *p, uint8_t len)
 {
     if (len < 1) return;
@@ -315,10 +283,6 @@ static void handle_status_req(uint8_t src, const uint8_t *p, uint8_t len)
         case FIELD_BATT_PCT:
             reply[1] = 0;
             reply[2] = BATTERY_GetPercent();
-            break;
-        case FIELD_ESTOP_STATE:
-            reply[1] = ESTOP_IsActive() ? 1u : 0u;
-            reply[2] = ESTOP_Reason();
             break;
         case FIELD_SLAVE_HB_AGE: {
             uint32_t age = HAL_GetTick() - slave_last_seen_ms;
@@ -405,9 +369,8 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   /* ── Initialise peripherals not in the .ioc ── */
-  MX_UART4_Init();       /* PI bridge link — UART4 (PA1 RX, PC10 TX) 460800  */
+  MX_UART4_Init();       /* PI bridge link — UART4 (PC11 RX, PC10 TX) 460800 */
   MX_UART7_Init();       /* Right VESC TX                                    */
-  MX_ESTOP_GPIO_Init();  /* PF15 input + EXTI                                */
   /* ADC1 is initialised by the auto-generated MX_ADC1_Init() called from
    * main() above; the battery-sense override lives in its USER CODE 2 block. */
 
@@ -420,17 +383,13 @@ int main(void)
   VESC_Init();
   VESC_SetValuesCallback(on_vesc_values);
 
-  /* ── Battery & e-stop modules ── */
+  /* ── Battery monitor ── */
   BATTERY_Init(&adc_battery_raw, 0.1754f, 12.6f, 9.0f);
-  ESTOP_Init();
 
   /* ── SRR-CP protocol: bind streams + register local handlers ── */
   COMM_Init(&huart4, &huart1);
   COMM_RegisterHandler(CMD_DRIVE,        handle_drive);
   COMM_RegisterHandler(CMD_DRIVE_STOP,   handle_drive_stop);
-  COMM_RegisterHandler(CMD_ESTOP_ASSERT, handle_estop_assert);
-  COMM_RegisterHandler(CMD_ESTOP_CLEAR,  handle_estop_clear);
-  COMM_RegisterHandler(CMD_ESTOP_QUERY,  handle_estop_query);
   COMM_RegisterHandler(CMD_STATUS_REQ,   handle_status_req);
   COMM_RegisterHandler(CMD_HEARTBEAT,    handle_heartbeat);
   COMM_RegisterHandler(CMD_PING,         handle_ping);
@@ -460,10 +419,6 @@ int main(void)
 
         uint32_t now = HAL_GetTick();
 
-        /* ── 0. E-stop service (always first). Emits the ESTOP_ASSERT broadcast
-         *      on first latch and re-commands zero duty while latched. */
-        ESTOP_Service();
-
         /* ── 1. Keypad scan ── */
         pendingKey = KEYPAD_Scan();
 
@@ -473,15 +428,11 @@ int main(void)
         /* ── 3. Battery sense IIR (rate-limited to 1 Hz internally) ── */
         BATTERY_Update();
 
-        /* Auto-escalate: critical battery → software e-stop (once only). */
-        if (BATTERY_IsCritical() && !ESTOP_IsActive()) {
-            ESTOP_AssertSoftware(FAULT_ESTOP_BATT_CRIT);
-        }
-
-        /* While e-stop is active, skip motor watchdog + telemetry streaming.
-         * Drive frames are already rejected in handle_drive(). */
-        if (ESTOP_IsActive()) {
-            goto loop_tail;
+        /* Auto-stop drive on battery critical (no latch — reasserts each loop
+         * while critical, joystick takes over again as soon as voltage recovers). */
+        if (BATTERY_IsCritical() && motorRunning) {
+            VESC_Stop();
+            motorRunning = 0;
         }
 
         /* ── 4. Motor watchdog — no DRIVE frame for CMD_TIMEOUT_MS → stop. */
@@ -544,8 +495,6 @@ int main(void)
             f[2] = (uint8_t)(hb_age & 0xFFu);
             COMM_Send(ADDR_PI, CMD_STATUS_STREAM, f, 3);
         }
-
-    loop_tail: ;
 
     }   /* end while(1) */
   /* USER CODE END 3 */
@@ -1098,29 +1047,32 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /**
- * MX_UART4_Init — ESP32-S3 bridge link (PA1 RX, PC10 TX, 460800 baud 8N1).
+ * MX_UART4_Init — ESP32-S3 bridge link (PC11 RX, PC10 TX, 460800 baud 8N1).
  *
- * Not in the .ioc so the GPIO alternate-function setup happens here. We
- * override PA1's previous ETH_REF_CLK alternate (AF11) with UART4_RX (AF8)
- * — the Ethernet peripheral isn't used on this build.
+ * Not in the .ioc so the GPIO alternate-function setup happens here.
+ *
+ * Why PC11 instead of PA1: on the Nucleo-F767ZI the on-board LAN8742A PHY
+ * drives 50 MHz REFCLK onto PA1 by hardware, regardless of whether the
+ * STM32 ETH peripheral is configured. Using PA1 as UART RX caused
+ * continuous spurious RXNE → ISR storm → main loop never ran.
+ * UART4_RX is also routable to PC11 (AF8); same alternate function.
  */
 static void MX_UART4_Init(void)
 {
     GPIO_InitTypeDef gpio = {0};
 
     __HAL_RCC_UART4_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    /* PA1 — UART4_RX */
-    gpio.Pin       = GPIO_PIN_1;
+    /* PC11 — UART4_RX */
+    gpio.Pin       = GPIO_PIN_11;
     gpio.Mode      = GPIO_MODE_AF_PP;
     gpio.Pull      = GPIO_PULLUP;                 /* idle-high for bare 3V3 link */
     gpio.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
     gpio.Alternate = GPIO_AF8_UART4;
-    HAL_GPIO_Init(GPIOA, &gpio);
+    HAL_GPIO_Init(GPIOC, &gpio);
 
-    /* PC10 — UART4_TX  (new with the S3; ESP8266 build had RX-only) */
+    /* PC10 — UART4_TX */
     gpio.Pin       = GPIO_PIN_10;
     gpio.Mode      = GPIO_MODE_AF_PP;
     gpio.Pull      = GPIO_NOPULL;
@@ -1143,8 +1095,7 @@ static void MX_UART4_Init(void)
         Error_Handler();
     }
 
-    /* NVIC — priority 5 matches UART5/UART7. ESTOP (PF15) sits at 2 so it
-     * preempts any UART RX in progress. */
+    /* NVIC — priority 5 matches UART5/UART7. */
     HAL_NVIC_SetPriority(UART4_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(UART4_IRQn);
 }
@@ -1185,27 +1136,6 @@ static void MX_UART7_Init(void)
 
     HAL_NVIC_SetPriority(UART7_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(UART7_IRQn);
-}
-
-/**
- * MX_ESTOP_GPIO_Init — PF15 input with pull-up, EXTI rising+falling trigger.
- *                      Active-low button shorts PF15 to GND. EXTI sits at
- *                      priority 2 — preempts UART RX (5) but yields to
- *                      SysTick/ETH.
- */
-static void MX_ESTOP_GPIO_Init(void)
-{
-    GPIO_InitTypeDef gpio = {0};
-
-    __HAL_RCC_GPIOF_CLK_ENABLE();
-
-    gpio.Pin  = ESTOP_Pin;
-    gpio.Mode = GPIO_MODE_IT_RISING_FALLING;
-    gpio.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(ESTOP_GPIO_Port, &gpio);
-
-    HAL_NVIC_SetPriority(EXTI15_10_IRQn, 2, 0);
-    HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 }
 
 /* USER CODE END 4 */

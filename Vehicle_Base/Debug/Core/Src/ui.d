@@ -35,8 +35,7 @@ Core/Src/ui.o: ../Core/Src/ui.c ../Core/Inc/ui.h \
  ../Core/Inc/vesc.h ../Core/Inc/datatypes.h ../Core/Inc/keypad.h \
  ../Core/Inc/ssd1306.h ../Core/Inc/ssd1306_conf.h \
  ../Core/Inc/ssd1306_fonts.h ../Core/Inc/ssd1306.h ../Core/Inc/vesc.h \
- ../Core/Inc/screen_power.h ../Core/Inc/screen_estop.h \
- ../Core/Inc/estop.h ../Core/Inc/battery.h
+ ../Core/Inc/screen_power.h ../Core/Inc/battery.h
 ../Core/Inc/ui.h:
 ../Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal.h:
 ../Core/Inc/stm32f7xx_hal_conf.h:
@@ -80,6 +79,4 @@ Core/Src/ui.o: ../Core/Src/ui.c ../Core/Inc/ui.h \
 ../Core/Inc/ssd1306.h:
 ../Core/Inc/vesc.h:
 ../Core/Inc/screen_power.h:
-../Core/Inc/screen_estop.h:
-../Core/Inc/estop.h:
 ../Core/Inc/battery.h:

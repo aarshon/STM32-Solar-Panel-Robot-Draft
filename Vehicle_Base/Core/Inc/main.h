@@ -111,10 +111,6 @@ void Error_Handler(void);
 #define SWO_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-/* E-stop button — PF15, internal pull-up, active-low (button shorts to GND) */
-#define ESTOP_Pin          GPIO_PIN_15
-#define ESTOP_GPIO_Port    GPIOF
-
 /* Battery divider tap — PC3 ⟶ ADC1_IN13 (47k/10k divider, ratio 0.1754) */
 #define BAT_SENSE_Pin      GPIO_PIN_3
 #define BAT_SENSE_GPIO_Port GPIOC

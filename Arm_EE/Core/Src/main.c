@@ -1,279 +1,291 @@
-/*
- * main.c  —  Arm/EE STM32 (ADDR_ARM_EE)
- * Board : STM32 Nucleo-F767ZI
- *
- * Talks to Vehicle_Base over USART6 (PG14 TX / PG9 RX, 115200 8N1) using
- * the SRR-CP protocol. Hosts 3 stepper joints driven by TIM1 + Tyler's
- * stepper.c / kinematics.c / motor_config.c (kept untouched).
- *
- * Wiring to Base (3 jumpers):
- *   Arm PG14 (USART6_TX)  ──────  Base PB7 (USART1_RX)
- *   Arm PG9  (USART6_RX)  ──────  Base PB6 (USART1_TX)
- *   Arm GND               ──────  Base GND
- *
- * USART6 leaves PD8/PD9 (ST-Link VCP) free, so you can still bring up a
- * separate UART_HandleTypeDef on USART3 for printf-over-USB if you want
- * arm-side debug output. Not initialised here.
- */
-
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "motor_config.h"
-#include "kinematics.h"
-#include "stepper.h"
 
-#include "comm_protocol.h"
-#include "comm_arm_handlers.h"
-#include "arm_motion.h"
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
 
-/* --- Peripheral handles ----------------------------------------------- */
-TIM_HandleTypeDef  htim1;
-UART_HandleTypeDef huart6;
+/* USER CODE END Includes */
 
-/* --- Forward declarations --------------------------------------------- */
-void        SystemClock_Config(void);
-void        MPU_Config(void);
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+TIM_HandleTypeDef htim1;
+
+/* USER CODE BEGIN PV */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MPU_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM1_Init(void);
-static void MX_USART6_UART_Init(void);
+/* USER CODE BEGIN PFP */
 
-/* --- SRR-CP RX byte staging (single-byte IT receive) ----------------- */
-static volatile uint8_t s_base_rx_byte = 0;
+/* USER CODE END PFP */
 
-/* =========================================================================
- * UART RX byte completion — feeds the SRR-CP parser FSM
- * ========================================================================= */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART6)
-    {
-        COMM_FeedByte(COMM_STREAM_SLAVE, s_base_rx_byte);
-        HAL_UART_Receive_IT(&huart6, (uint8_t *)&s_base_rx_byte, 1);
-    }
-}
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
 
-/* =========================================================================
- * main
- * ========================================================================= */
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
-    MPU_Config();
-    HAL_Init();
-    SystemClock_Config();
 
-    MX_GPIO_Init();
-    MX_TIM1_Init();
-    MX_USART6_UART_Init();
+  /* USER CODE BEGIN 1 */
 
-    HAL_TIM_Base_Start_IT(&htim1);
+  /* USER CODE END 1 */
 
-    /* Tyler's hardware init — assigns motor structs and enables drivers. */
-    Motors_Init();
+  /* MPU Configuration--------------------------------------------------------*/
+  MPU_Config();
 
-    /* SRR-CP: bind the parser to USART6 (slave-stream-only on this node)
-     * and register the arm-side command handlers. */
-    COMM_Init(NULL, &huart6);
-    Arm_RegisterAllHandlers();
+  /* MCU Configuration--------------------------------------------------------*/
 
-    /* Arm the byte-at-a-time RX interrupt — handler re-arms after each. */
-    HAL_UART_Receive_IT(&huart6, (uint8_t *)&s_base_rx_byte, 1);
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
 
-    uint32_t last_hb_tx = 0;
+  /* USER CODE BEGIN Init */
 
-    while (1)
-    {
-        uint32_t now = HAL_GetTick();
+  /* USER CODE END Init */
 
-        /* 1. Periodic heartbeat to Base (1 Hz) so Base's slave-link UI
-         *    indicator stays alive and we get the same in return. */
-        if ((now - last_hb_tx) >= 1000u)
-        {
-            last_hb_tx = now;
-            Arm_SendHeartbeat(now);
-        }
+  /* Configure the system clock */
+  SystemClock_Config();
 
-        /* 2. Watchdog — if Base goes silent for >BASE_TIMEOUT_MS, halt
-         *    motors locally. Latch persists until ESTOP_CLEAR arrives. */
-        Arm_CheckBaseLiveness(now);
+  /* USER CODE BEGIN SysInit */
 
-        /* 3. (TYLER) any non-ISR motion bookkeeping goes here. The step
-         *    pulse generation runs in HAL_TIM_PeriodElapsedCallback. */
-    }
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_TIM1_Init();
+  /* USER CODE BEGIN 2 */
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
 }
 
-/* =========================================================================
- * Clocks — HSI 16 MHz, no PLL. (TYLER: bring up to PLL when ramping is in
- * place; current step rate is ~3.8 kHz which caps joint speed at ~4.5°/s.)
- * ========================================================================= */
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
 void SystemClock_Config(void)
 {
-    RCC_OscInitTypeDef osc = {0};
-    RCC_ClkInitTypeDef clk = {0};
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-    __HAL_RCC_PWR_CLK_ENABLE();
-    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
-    osc.OscillatorType        = RCC_OSCILLATORTYPE_HSI;
-    osc.HSIState              = RCC_HSI_ON;
-    osc.HSICalibrationValue   = RCC_HSICALIBRATION_DEFAULT;
-    osc.PLL.PLLState          = RCC_PLL_NONE;
-    if (HAL_RCC_OscConfig(&osc) != HAL_OK) Error_Handler();
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
-    clk.ClockType             = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-                              | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    clk.SYSCLKSource          = RCC_SYSCLKSOURCE_HSI;
-    clk.AHBCLKDivider         = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider        = RCC_HCLK_DIV1;
-    clk.APB2CLKDivider        = RCC_HCLK_DIV1;
-    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_0) != HAL_OK) Error_Handler();
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
-/* =========================================================================
- * TIM1 — step-pulse ISR clock (Tyler tunes prescaler/period for step rate)
- * ========================================================================= */
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM1_Init(void)
 {
-    TIM_ClockConfigTypeDef clkcfg  = {0};
-    TIM_MasterConfigTypeDef mscfg  = {0};
 
-    htim1.Instance               = TIM1;
-    htim1.Init.Prescaler         = 84 - 1;          /* TYLER: tune for clock */
-    htim1.Init.CounterMode       = TIM_COUNTERMODE_UP;
-    htim1.Init.Period            = 50 - 1;          /* TYLER: tune for ISR rate */
-    htim1.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
-    htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-    HAL_TIM_Base_Init(&htim1);
+  /* USER CODE BEGIN TIM1_Init 0 */
 
-    clkcfg.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-    HAL_TIM_ConfigClockSource(&htim1, &clkcfg);
+  /* USER CODE END TIM1_Init 0 */
 
-    mscfg.MasterOutputTrigger = TIM_TRGO_RESET;
-    mscfg.MasterSlaveMode     = TIM_MASTERSLAVEMODE_DISABLE;
-    HAL_TIMEx_MasterConfigSynchronization(&htim1, &mscfg);
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-    HAL_NVIC_SetPriority(TIM1_UP_TIM10_IRQn, 1, 0);
-    HAL_NVIC_EnableIRQ(TIM1_UP_TIM10_IRQn);
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
 }
 
-/* =========================================================================
- * USART6 — SRR-CP slave link to Vehicle_Base (PG14 TX / PG9 RX)
- *
- * Hand-rolled because the .ioc was generated minimal (no UART block).
- * Tyler can later add USART6 to the .ioc; Cube's auto-generated init will
- * land in main() above this and supersede this function.
- *
- * Pin alternates: USART6_TX is also available on PC6, USART6_RX on PC7.
- * If your wiring uses those instead, swap the AF mapping + GPIO clock here.
- * ========================================================================= */
-static void MX_USART6_UART_Init(void)
-{
-    GPIO_InitTypeDef gpio = {0};
-
-    __HAL_RCC_USART6_CLK_ENABLE();
-    __HAL_RCC_GPIOG_CLK_ENABLE();
-
-    /* PG14 = USART6_TX, PG9 = USART6_RX (both AF8) */
-    gpio.Pin       = GPIO_PIN_14 | GPIO_PIN_9;
-    gpio.Mode      = GPIO_MODE_AF_PP;
-    gpio.Pull      = GPIO_PULLUP;                   /* idle-high for bare 3V3 */
-    gpio.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
-    gpio.Alternate = GPIO_AF8_USART6;
-    HAL_GPIO_Init(GPIOG, &gpio);
-
-    huart6.Instance            = USART6;
-    huart6.Init.BaudRate       = 115200;
-    huart6.Init.WordLength     = UART_WORDLENGTH_8B;
-    huart6.Init.StopBits       = UART_STOPBITS_1;
-    huart6.Init.Parity         = UART_PARITY_NONE;
-    huart6.Init.Mode           = UART_MODE_TX_RX;
-    huart6.Init.HwFlowCtl      = UART_HWCONTROL_NONE;
-    huart6.Init.OverSampling   = UART_OVERSAMPLING_16;
-    huart6.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-    huart6.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-    if (HAL_UART_Init(&huart6) != HAL_OK) Error_Handler();
-
-    HAL_NVIC_SetPriority(USART6_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(USART6_IRQn);
-}
-
-/* =========================================================================
- * GPIO — stepper STEP/DIR/ENA pins (Tyler's pin map)
- *
- * Motor 1: STEP=PA3, DIR=PC0, ENA=PF6
- * Motor 2: STEP=PC3, DIR=PF3, ENA=PF7
- * Motor 3: STEP=PF5, DIR=PF10, ENA=PF8
- * ========================================================================= */
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_GPIO_Init(void)
 {
-    GPIO_InitTypeDef gpio = {0};
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
 
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    __HAL_RCC_GPIOF_CLK_ENABLE();
+  /* USER CODE END MX_GPIO_Init_1 */
 
-    /* Default states — STEP/DIR low, ENA high (drivers are typically
-     * active-low; Stepper_Enable(true) drives ENA low). */
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0 | GPIO_PIN_3, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOF,
-        GPIO_PIN_3 | GPIO_PIN_5 | GPIO_PIN_6 |
-        GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_10,
-        GPIO_PIN_SET);
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
 
-    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
-    gpio.Pull  = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_RESET);
 
-    /* Motor 1 */
-    gpio.Pin = GPIO_PIN_3;                  HAL_GPIO_Init(GPIOA, &gpio);  /* STEP */
-    gpio.Pin = GPIO_PIN_0;                  HAL_GPIO_Init(GPIOC, &gpio);  /* DIR  */
-    gpio.Pin = GPIO_PIN_6;                  HAL_GPIO_Init(GPIOF, &gpio);  /* ENA  */
+  /*Configure GPIO pins : PA1 PA2 PA3 */
+  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* Motor 2 */
-    gpio.Pin = GPIO_PIN_3;                  HAL_GPIO_Init(GPIOC, &gpio);  /* STEP */
-    gpio.Pin = GPIO_PIN_3 | GPIO_PIN_7;     HAL_GPIO_Init(GPIOF, &gpio);  /* DIR + ENA */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
 
-    /* Motor 3 */
-    gpio.Pin = GPIO_PIN_5 | GPIO_PIN_10 | GPIO_PIN_8;
-    HAL_GPIO_Init(GPIOF, &gpio);
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 /* USER CODE END 4 */
 
-/* =========================================================================
- * MPU — keep Cube's default null-pointer trap region.
- * ========================================================================= */
+ /* MPU Configuration */
+
 void MPU_Config(void)
 {
-    MPU_Region_InitTypeDef r = {0};
+  MPU_Region_InitTypeDef MPU_InitStruct = {0};
 
-    HAL_MPU_Disable();
+  /* Disables the MPU */
+  HAL_MPU_Disable();
 
-    r.Enable             = MPU_REGION_ENABLE;
-    r.Number             = MPU_REGION_NUMBER0;
-    r.BaseAddress        = 0x0;
-    r.Size               = MPU_REGION_SIZE_4GB;
-    r.SubRegionDisable   = 0x87;
-    r.TypeExtField       = MPU_TEX_LEVEL0;
-    r.AccessPermission   = MPU_REGION_NO_ACCESS;
-    r.DisableExec        = MPU_INSTRUCTION_ACCESS_DISABLE;
-    r.IsShareable        = MPU_ACCESS_SHAREABLE;
-    r.IsCacheable        = MPU_ACCESS_NOT_CACHEABLE;
-    r.IsBufferable       = MPU_ACCESS_NOT_BUFFERABLE;
-    HAL_MPU_ConfigRegion(&r);
+  /** Initializes and configures the Region and the memory to be protected
+  */
+  MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number = MPU_REGION_NUMBER0;
+  MPU_InitStruct.BaseAddress = 0x0;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_4GB;
+  MPU_InitStruct.SubRegionDisable = 0x87;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_NO_ACCESS;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
+  MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE;
+  MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
 
-    HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+  /* Enables the MPU */
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
 }
 
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
-    __disable_irq();
-    while (1) { }
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
 }
-
 #ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-    (void)file; (void)line;
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
 }
-#endif
+#endif /* USE_FULL_ASSERT */

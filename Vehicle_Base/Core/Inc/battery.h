@@ -51,7 +51,7 @@ uint8_t BATTERY_GetPercent(void);
 /* 1 when the pack is under 15% SoC, 0 otherwise. Sticky until recharge. */
 uint8_t BATTERY_IsLow(void);
 
-/* 1 when under 5% SoC — caller should ESTOP_AssertSoftware(BATT_CRITICAL). */
+/* 1 when under 5% SoC — main loop calls VESC_Stop() in this state. */
 uint8_t BATTERY_IsCritical(void);
 
 #ifdef __cplusplus

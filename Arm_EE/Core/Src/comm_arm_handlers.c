@@ -6,8 +6,10 @@
  * from Arm_Tick() in main.c, NOT from the UART RX ISR).
  *
  * Liveness rule: if no CMD_HEARTBEAT (or any frame) has arrived from
- * ADDR_BASE for BASE_TIMEOUT_MS, we assert a software e-stop locally and
- * report it back upstream once Base reappears.
+ * ADDR_BASE for BASE_TIMEOUT_MS, we halt the motors locally (this is a
+ * communication-loss safety, NOT an e-stop — the project has no e-stop
+ * subsystem). When Base traffic resumes, the next inbound frame clears
+ * s_motors_halted and motion is allowed again.
  */
 
 #include "comm_arm_handlers.h"
@@ -20,8 +22,7 @@
 
 /* --- Module state ------------------------------------------------------ */
 static uint8_t  s_last_fault     = FAULT_NONE;
-static uint8_t  s_estop_latched  = 0;
-static uint8_t  s_estop_reason   = 0;
+static uint8_t  s_motors_halted  = 0;     /* watchdog halt latch (one-shot) */
 static uint32_t s_last_base_rx   = 0;
 
 uint8_t Arm_LastFault(void) { return s_last_fault; }
@@ -98,47 +99,17 @@ static void handle_ee_pulse(uint8_t src, const uint8_t *p, uint8_t len)
     ArmMotion_EE_Pulse(ms);
 }
 
-static void handle_estop_assert(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)src;
-    s_estop_latched = 1;
-    s_estop_reason  = (len >= 1) ? p[0] : FAULT_ESTOP_SOFTWARE;
-    s_last_fault    = s_estop_reason;
-    ArmMotion_HaltAll();
-}
-
-static void handle_estop_clear(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)src; (void)p; (void)len;
-    s_estop_latched = 0;
-    s_estop_reason  = 0;
-    s_last_fault    = FAULT_NONE;
-    ArmMotion_ResumeAll();
-}
-
-static void handle_estop_query(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)src; (void)p; (void)len;
-    uint8_t pl[2] = {
-        FIELD_ESTOP_STATE,
-        s_estop_latched ? s_estop_reason : 0u
-    };
-    arm_tx(ADDR_BASE, CMD_STATUS_REPLY, pl, 2);
-}
-
 static void handle_status_req(uint8_t src, const uint8_t *p, uint8_t len)
 {
     (void)src; (void)p; (void)len;
 
-    /* Pack a compact STATUS_REPLY: estop state + last fault.
+    /* Compact STATUS_REPLY: firmware version + last fault.
      * Joint angles streamed separately via STATUS_STREAM if needed. */
-    uint8_t pl[6];
-    pl[0] = FIELD_ESTOP_STATE;
-    pl[1] = s_estop_latched ? s_estop_reason : 0u;
-    pl[2] = FIELD_FW_VERSION;
-    pl[3] = 0x01;                /* major */
-    pl[4] = 0x00;                /* minor */
-    pl[5] = s_last_fault;
+    uint8_t pl[4];
+    pl[0] = FIELD_FW_VERSION;
+    pl[1] = 0x01;                /* major */
+    pl[2] = 0x00;                /* minor */
+    pl[3] = s_last_fault;
     arm_tx(ADDR_BASE, CMD_STATUS_REPLY, pl, sizeof(pl));
 }
 
@@ -146,6 +117,14 @@ static void handle_heartbeat(uint8_t src, const uint8_t *p, uint8_t len)
 {
     (void)src; (void)p; (void)len;
     s_last_base_rx = HAL_GetTick();
+
+    /* Heartbeat from Base means the wire is healthy again — release any
+     * watchdog-imposed motor halt so the next CMD_ARM_TARGET works. */
+    if (s_motors_halted) {
+        s_motors_halted = 0;
+        s_last_fault    = FAULT_NONE;
+        ArmMotion_ResumeAll();
+    }
 }
 
 static void handle_ping(uint8_t src, const uint8_t *p, uint8_t len)
@@ -176,10 +155,6 @@ void Arm_RegisterAllHandlers(void)
     COMM_RegisterHandler(CMD_EE_TORQUE,     handle_ee_torque);
     COMM_RegisterHandler(CMD_EE_PULSE,      handle_ee_pulse);
 
-    COMM_RegisterHandler(CMD_ESTOP_ASSERT,  handle_estop_assert);
-    COMM_RegisterHandler(CMD_ESTOP_CLEAR,   handle_estop_clear);
-    COMM_RegisterHandler(CMD_ESTOP_QUERY,   handle_estop_query);
-
     COMM_RegisterHandler(CMD_STATUS_REQ,    handle_status_req);
     COMM_RegisterHandler(CMD_HEARTBEAT,     handle_heartbeat);
     COMM_RegisterHandler(CMD_PING,          handle_ping);
@@ -202,14 +177,14 @@ void Arm_SendHeartbeat(uint32_t uptime_ms)
 
 void Arm_CheckBaseLiveness(uint32_t now_ms)
 {
-    if (s_estop_latched) return;   /* already halted */
+    if (s_motors_halted) return;   /* already halted, nothing to do */
 
     if ((now_ms - s_last_base_rx) > BASE_TIMEOUT_MS)
     {
-        s_estop_latched = 1;
-        s_estop_reason  = FAULT_ESTOP_WATCHDOG;
-        s_last_fault    = FAULT_ESTOP_WATCHDOG;
+        s_motors_halted = 1;
+        s_last_fault    = FAULT_WATCHDOG;
         ArmMotion_HaltAll();
-        /* Don't spam fault reports — Base will see us silent and infer */
+        /* Don't spam fault reports — Base will see us silent and infer.
+         * Halt is auto-cleared by the next inbound heartbeat. */
     }
 }

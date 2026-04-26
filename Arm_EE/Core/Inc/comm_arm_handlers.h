@@ -11,8 +11,6 @@
  *   CMD_ARM_ZERO     : uint8 joint_mask                    (1 B)
  *   CMD_EE_TORQUE    : int8  torque                        (1 B)
  *   CMD_EE_PULSE     : uint16 duration_ms                  (2 B, big-endian)
- *   CMD_ESTOP_ASSERT : uint8 reason_code                   (1 B)
- *   CMD_ESTOP_CLEAR  : (none)
  *   CMD_STATUS_REQ   : (none) — replies with STATUS_REPLY
  *   CMD_HEARTBEAT    : uint16 uptime_seconds               (2 B, big-endian)
  *   CMD_PING         : (none) — replies with CMD_PONG echoing payload
@@ -27,7 +25,7 @@ void Arm_RegisterAllHandlers(void);
 
 /* Periodic helpers driven from main loop */
 void Arm_SendHeartbeat(uint32_t uptime_ms);
-void Arm_CheckBaseLiveness(uint32_t now_ms);  /* trips e-stop if no HB */
+void Arm_CheckBaseLiveness(uint32_t now_ms);  /* halts motors if no HB */
 
 /* Last fault we emitted; latest STATUS reply pulls from this. */
 uint8_t Arm_LastFault(void);

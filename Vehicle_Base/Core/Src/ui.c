@@ -36,8 +36,6 @@
 #include "ssd1306_fonts.h"
 #include "vesc.h"
 #include "screen_power.h"
-#include "screen_estop.h"
-#include "estop.h"
 #include "battery.h"
 #include <string.h>
 #include <stdio.h>
@@ -315,8 +313,7 @@ static void ui_draw_status_monitor(void)
     /* ── Row 5: Slave status ── */
     uint32_t slv_age  = now - ui.slave_last_seen_ms;
     const char *slv_state = "INIT";
-    if (ui.estop_active)                       slv_state = "ESTP";
-    else if (ui.slave_last_seen_ms == 0)       slv_state = "INIT";
+    if (ui.slave_last_seen_ms == 0)            slv_state = "INIT";
     else if (slv_age > 1000u)                  slv_state = "TMO ";
     else                                       slv_state = "OK  ";
 
@@ -575,19 +572,6 @@ static void ui_handle_power(uint8_t key)
     }
 }
 
-/* E-stop screen — delegate clear sequence to screen_estop. When cleared, we
- * release the latch via ESTOP_Clear() (which also broadcasts ESTOP_CLEAR). */
-static void ui_handle_estop(uint8_t key)
-{
-    ScreenEstop_Action_t act = ScreenEstop_HandleKey(key);
-    if (act == SCREEN_ESTOP_ACTION_CLEAR) {
-        ESTOP_Clear();
-        ui.estop_active = 0;
-        ui.estop_reason = 0;
-        ui_set_screen(SCREEN_MAIN_MENU);
-    }
-}
-
 static void ui_handle_info(uint8_t key)
 {
     uint8_t k = key & 0x7Fu;
@@ -629,25 +613,6 @@ void UI_Update(uint8_t key)
     ui.battery_voltage = BATTERY_GetVoltage();
     ui.battery_pct     = BATTERY_GetPercent();
 
-    /* ---- E-stop hard-jump (runs before everything else) ----------------
-     * An active latch always forces SCREEN_ESTOP regardless of what the
-     * user last navigated to. Entering the screen arms its clear-sequence
-     * tracker via ScreenEstop_Reset().
-     */
-    uint8_t estop_now = ESTOP_IsActive();
-    if (estop_now && !ui.estop_active) {
-        ui.estop_active = 1;
-        ui.estop_reason = ESTOP_Reason();
-        ScreenEstop_Reset();
-        ui_set_screen(SCREEN_ESTOP);
-    } else if (estop_now && ui.currentScreen != SCREEN_ESTOP) {
-        ui_set_screen(SCREEN_ESTOP);
-    } else if (!estop_now && ui.estop_active) {
-        /* Cleared externally (e.g. software clear). Drop back to menu. */
-        ui.estop_active = 0;
-        if (ui.currentScreen == SCREEN_ESTOP) ui_set_screen(SCREEN_MAIN_MENU);
-    }
-
     /* ---- Fault flash (highest priority — overrides everything) --------- */
     if (ui.faultFlashCount > 0 &&
         (now - ui.lastFlashMs) >= 200u)
@@ -683,7 +648,6 @@ void UI_Update(uint8_t key)
             case SCREEN_ROBOT_ARM:      ui_handle_robot_arm(key);      break;
             case SCREEN_POWER:          ui_handle_power(key);          break;
             case SCREEN_INFO:           ui_handle_info(key);           break;
-            case SCREEN_ESTOP:          ui_handle_estop(key);          break;
             default: break;
         }
     }
@@ -691,8 +655,7 @@ void UI_Update(uint8_t key)
     /* ---- Auto-refresh for live screens --------------------------------- */
     if (ui.currentScreen == SCREEN_STATUS_MONITOR ||
         ui.currentScreen == SCREEN_INFO           ||
-        ui.currentScreen == SCREEN_POWER          ||
-        ui.currentScreen == SCREEN_ESTOP)
+        ui.currentScreen == SCREEN_POWER)
     {
         if ((now - ui.lastStatusRedrawMs) >= 200u) {
             ui.lastStatusRedrawMs = now;
@@ -721,7 +684,6 @@ void UI_Update(uint8_t key)
         case SCREEN_ROBOT_ARM:      ui_draw_robot_arm();      break;
         case SCREEN_POWER:          ScreenPower_Draw();       break;
         case SCREEN_INFO:           ui_draw_info();           break;
-        case SCREEN_ESTOP:          ScreenEstop_Draw();       break;
         default: break;
     }
 }

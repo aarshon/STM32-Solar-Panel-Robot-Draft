@@ -47,9 +47,7 @@ extern "C" {
 #define CMD_EE_TORQUE           0x30u
 #define CMD_EE_PULSE            0x31u
 
-#define CMD_ESTOP_ASSERT        0x40u
-#define CMD_ESTOP_CLEAR         0x41u
-#define CMD_ESTOP_QUERY         0x42u
+/* 0x40..0x42 reserved (formerly CMD_ESTOP_*; e-stop subsystem removed) */
 
 #define CMD_STATUS_REQ          0x50u
 #define CMD_STATUS_REPLY        0x51u
@@ -71,18 +69,15 @@ extern "C" {
 #define FIELD_VESC_L_TEMP       0x13u
 #define FIELD_VESC_L_FAULT      0x14u
 #define FIELD_SLAVE_HB_AGE      0x30u
-#define FIELD_ESTOP_STATE       0x50u
+/* 0x50 reserved (formerly FIELD_ESTOP_STATE) */
 #define FIELD_FW_VERSION        0xFFu
 
 /* ---- Seed fault codes (full catalogue deferred) --------------------------- */
 #define FAULT_NONE              0x00u
 #define FAULT_BATT_LOW          0x40u
 #define FAULT_BATT_CRITICAL     0x41u
-#define FAULT_ESTOP_BUTTON      0x50u
-#define FAULT_ESTOP_SOFTWARE    0x51u
-#define FAULT_ESTOP_WATCHDOG    0x52u
-#define FAULT_ESTOP_BATT_CRIT   0x53u
-#define FAULT_ESTOP_SLAVE       0x54u
+#define FAULT_WATCHDOG          0x52u   /* slave/base comms loss → motor halt */
+/* 0x50, 0x51, 0x53, 0x54 reserved (formerly FAULT_ESTOP_*) */
 
 /* ---- Stream identifiers --------------------------------------------------- */
 typedef enum {

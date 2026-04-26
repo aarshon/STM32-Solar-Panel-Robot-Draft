@@ -10,7 +10,6 @@
  *   ROBOT_ARM      → placeholder (arm team will implement)
  *   POWER          → battery voltage, SoC %, low/crit warning, VESC V cross-check
  *   INFO           → uptime, firmware label, fault log
- *   ESTOP          → full-screen flashing banner while ESTOP_IsActive()
  *
  * Note: mc_values and mc_fault_code come from datatypes.h (bldc_interface
  * library) via vesc.h.  Do NOT include datatypes.h directly here.
@@ -33,7 +32,6 @@ typedef enum {
     SCREEN_ROBOT_ARM,        /* menu cursor 2 */
     SCREEN_POWER,            /* menu cursor 3 */
     SCREEN_INFO,             /* menu cursor 4 */
-    SCREEN_ESTOP,            /* not menu-reachable; hard-jump only */
     SCREEN_COUNT
 } UI_Screen_t;
 
@@ -99,10 +97,6 @@ typedef struct {
     /* Slave-link state (ms since last heartbeat, last reported fault) */
     uint32_t      slave_last_seen_ms;
     uint8_t       slave_fault_code;
-
-    /* E-stop mirror — updated by main loop from estop.c */
-    uint8_t       estop_active;
-    uint8_t       estop_reason;
 
 } UI_State_t;
 

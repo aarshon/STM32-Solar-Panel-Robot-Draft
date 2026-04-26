@@ -33,10 +33,10 @@ void ArmMotion_Jog(uint8_t joint, int8_t dir, uint8_t speed);
 /* --- State transitions -------------------------------------------------- */
 
 /** Halt all step pulses immediately (does NOT disable the drivers — motors
- *  keep holding torque). Used by ESTOP_ASSERT. */
+ *  keep holding torque). Used by the comms-loss watchdog. */
 void ArmMotion_HaltAll(void);
 
-/** Re-enable motion after a halt. Used by ESTOP_CLEAR. */
+/** Re-enable motion after a halt. Called when Base traffic resumes. */
 void ArmMotion_ResumeAll(void);
 
 /** Zero the current step counters for the joints in mask (bit n = joint n).

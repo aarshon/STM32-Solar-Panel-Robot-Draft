@@ -26,7 +26,6 @@
  *     vehicle/base       DST=0x01  CMD=0x10 DRIVE      payload [x, y]          (2)
  *     vehicle/arm        DST=0x02  CMD=0x20 ARM_TARGET payload [jid, hi, lo]   (3)
  *     vehicle/effector   DST=0x02  CMD=0x30 EE_TORQUE  payload [state]         (1)
- *     vehicle/estop      DST=0xFF  CMD=0x40 ESTOP      payload [reason]        (1)
  *
  *  Return path (Base → Pi)
  *  ───────────────────────
@@ -65,7 +64,6 @@
 #define CMD_DRIVE        0x10
 #define CMD_ARM_TARGET   0x20
 #define CMD_EE_TORQUE    0x30
-#define CMD_ESTOP_ASSERT 0x40
 #define CMD_STATUS_STREAM 0x52
 #define CMD_FAULT_REPORT 0x60
 
@@ -210,9 +208,6 @@ static void on_mqtt_message(char *topic, uint8_t *payload, unsigned int len)
     } else if (strcmp(topic, "vehicle/effector") == 0 && len >= 1) {
         uint8_t p[1] = { payload[0] };
         emit_frame(ADDR_ARM_EE, ADDR_PI, CMD_EE_TORQUE, p, 1);
-    } else if (strcmp(topic, "vehicle/estop") == 0) {
-        uint8_t reason = (len >= 1) ? payload[0] : 0x51; /* SOFTWARE */
-        emit_frame(ADDR_BCAST, ADDR_PI, CMD_ESTOP_ASSERT, &reason, 1);
     }
 }
 
@@ -251,7 +246,6 @@ static void ensure_mqtt()
         mqtt.subscribe("vehicle/base");
         mqtt.subscribe("vehicle/arm");
         mqtt.subscribe("vehicle/effector");
-        mqtt.subscribe("vehicle/estop");
     }
 }
 

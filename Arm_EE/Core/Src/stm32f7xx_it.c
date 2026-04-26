@@ -23,31 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
-#include "motor_config.h"
-#include "stepper.h"
 
-extern TIM_HandleTypeDef  htim1;
-extern UART_HandleTypeDef huart6;
-
-void TIM1_UP_TIM10_IRQHandler(void)
-{
-    HAL_TIM_IRQHandler(&htim1);
-}
-
-void USART6_IRQHandler(void)
-{
-    HAL_UART_IRQHandler(&huart6);
-}
-
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-    if (htim->Instance == TIM1)
-    {
-        Stepper_StepISR(&motor1);
-        Stepper_StepISR(&motor2);
-        Stepper_StepISR(&motor3);
-    }
-}
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN TD */
 
