@@ -1,0 +1,4 @@
+../Core/Src/packet.c:44:6:packet_init	24	static
+../Core/Src/packet.c:50:6:packet_send_packet	40	static
+../Core/Src/packet.c:82:6:packet_timerfunc	16	static
+../Core/Src/packet.c:93:6:packet_process_byte	24	static
