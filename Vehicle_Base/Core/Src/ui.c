@@ -310,14 +310,8 @@ static void ui_draw_status_monitor(void)
     ssd1306_SetCursor(0, 50);
     ssd1306_WriteString(buf, Font_6x8, White);
 
-    /* ── Row 5: Slave status ── */
-    uint32_t slv_age  = now - ui.slave_last_seen_ms;
-    const char *slv_state = "INIT";
-    if (ui.slave_last_seen_ms == 0)            slv_state = "INIT";
-    else if (slv_age > 1000u)                  slv_state = "TMO ";
-    else                                       slv_state = "OK  ";
-
-    snprintf(buf, sizeof(buf), "Slv:%s  CTRL:%s", slv_state,
+    /* ── Row 5: Drive control state ── */
+    snprintf(buf, sizeof(buf), "CTRL:%s",
              motorRunning ? "REMOTE" : "IDLE");
     ssd1306_SetCursor(0, 57);
     ssd1306_WriteString(buf, Font_6x8, White);

@@ -2,53 +2,38 @@
 /**
  ******************************************************************************
  * @file    main.c
- * @brief   Solar Panel Robot — Merged STM32 Firmware
+ * @brief   Solar Panel Robot — Vehicle Base Firmware (master)
  *          Board: STM32 Nucleo-F767ZI
  *
  * SYSTEM OVERVIEW
  * ───────────────
  *
- *  Raspberry Pi  ──WiFi──►  ESP8266 (click shield)  ──UART4──►  STM32
- *                             (MQTT bridge)                    (this file)
+ *   CTRL (Pi/operator) ──WiFi/BLE──► ESP32-S3 ──UART4──► Base STM32 ──UART1──► Arm STM32
  *
- *  1. Raspberry Pi reads MCP3008 joystick ADC and publishes to MQTT broker
- *     (localhost:1883, topic "vehicle/base") as {"x": float, "y": float}
- *     where both values are normalised to [0.0, 1.0], centre = 0.5.
+ *  All serial hops carry the same fixed 12-byte frame defined in
+ *  comm_protocol.h:
  *
- *  2. ESP8266 click shield (flashed with esp8266_mqtt.ino):
- *     - Creates WiFi AP "ESP32_AP"
- *     - Subscribes to Pi's MQTT broker at 192.168.4.2:1883
- *     - Converts JSON to 4-byte binary frame and sends over UART to STM32:
- *         [0xAA] [x_byte] [y_byte] [0x55]
- *         where x_byte/y_byte are uint8 (0-255, centre = 128)
+ *      0x41 0x5A | sysID mode xH xL yH yL zDir yaw | 0x59 0x42
  *
- *  3. STM32 (this firmware):
- *     - Parses ESP8266 frames on UART4
- *     - Applies Ian's tank-drive mixing math
- *     - Commands both VESC ESCs (FESC 6.7) via bldc_interface library
- *     - Displays live telemetry + Pi connection status on SSD1306 OLED
- *     - Provides local keypad fallback control
+ *  Routing on Base is by sysID alone:
+ *      0x01  CTRL→BASE : decode joystick → tank-drive both VESCs
+ *      0x02  CTRL→ARM  : forward verbatim out the Arm UART
+ *      0x03  ARM→CTRL  : forward verbatim out the bridge UART
  *
  * UART ASSIGNMENTS
  * ────────────────
- *   UART4  (PC11 RX) ← ESP32-S3 SRR-CP frames
- *   UART5  (PC12 TX, PC11 RX) ↔ Left  VESC ESC (bldc_interface + telemetry)
- *   UART7  (PE8  TX) → Right VESC ESC (bldc_interface, TX only)
- *   USART3 (PD8  TX) → ST-Link virtual COM (debug output)
- *   I2C1   (PB8 SCL, PB9 SDA) ↔ SSD1306 OLED 128×64
- *
- * MOTOR CONTROL PROTOCOL
- * ──────────────────────
- *   The bldc_interface library (Benjamin Vedder, GPLv3) serialises commands
- *   as VESC binary frames: [0x02][len][payload][CRC16_hi][CRC16_lo][0x03]
- *   Commands used: COMM_SET_DUTY (0x05), COMM_GET_VALUES (0x04)
+ *   UART4  (PC10 TX / PC11 RX, 460800) ↔ ESP32-S3 bridge   [comm_protocol]
+ *   UART1  (PB6  TX / PB7  RX, 115200) ↔ Arm STM32         [comm_protocol]
+ *   UART5  (PC12 TX / PD2  RX, 115200) ↔ Left VESC ESC     [bldc_interface]
+ *   UART7  (PE8  TX,           115200) → Right VESC ESC    [bldc_interface]
+ *   USART3 (PD8  TX, 115200)           → ST-Link VCP debug
+ *   I2C1   (PB8 SCL / PB9 SDA)         ↔ SSD1306 OLED 128×64
  *
  * SAFETY WATCHDOG
  * ───────────────
- *   If no ESP8266 frame arrives within CMD_TIMEOUT_MS (500 ms), both motors
- *   are stopped and the OLED shows "Pi: TIMEOUT".  The VESC ESC has its own
- *   independent 1-second timeout that also cuts motor power if it sees no
- *   commands — this is a second layer of protection.
+ *   If no SYS_CTRL_TO_BASE frame arrives within CMD_TIMEOUT_MS (500 ms),
+ *   both motors are stopped. The VESC ESC has its own independent 1 s
+ *   keep-alive timeout as a second layer.
  ******************************************************************************
  * @attention
  * Copyright (c) 2026 STMicroelectronics / Solar Panel Robot Team.
@@ -81,19 +66,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/** CMD_TIMEOUT_MS — stop motors if no DRIVE frame arrives within this window.
- *  500 ms matches the VESC firmware's own keep-alive timeout. The VESC will
- *  also self-stop after 1 s — this fires first. */
+/** CMD_TIMEOUT_MS — stop motors if no SYS_CTRL_TO_BASE frame arrives within
+ *  this window. 500 ms matches the VESC firmware's own keep-alive timeout;
+ *  the VESC will self-stop after 1 s as a second layer. */
 #define CMD_TIMEOUT_MS      500u
-
-/** Slave liveness: expect a HEARTBEAT frame at least every 1 s on UART1. */
-#define SLAVE_TIMEOUT_MS    1000u
-
-/** Base emits its own HEARTBEAT to the slave at 2 Hz. */
-#define HEARTBEAT_PERIOD_MS 500u
-
-/** Telemetry STATUS_STREAM push to Pi at 4 Hz. */
-#define TELEMETRY_PERIOD_MS 250u
 
 /* USER CODE END PD */
 
@@ -144,11 +120,11 @@ UART_HandleTypeDef huart3;
 UART_HandleTypeDef huart4;   /* UART4  (PC11 RX / PC10 TX) — ESP32-S3 bridge */
 UART_HandleTypeDef huart7;   /* UART7  (PE8 TX)           — Right VESC ESC   */
 
-/* ── SRR-CP single-byte RX staging for each UART stream ──────────────────
+/* ── Single-byte RX staging for each UART stream ─────────────────────────
  * Each byte fires HAL_UART_RxCpltCallback, which feeds the parser FSM in
  * comm_protocol.c and re-arms the interrupt. */
-static volatile uint8_t pi_rx_byte    = 0;  /* UART4 ← ESP32-S3               */
-static volatile uint8_t slave_rx_byte = 0;  /* UART1 ← Arm/EE STM32           */
+static volatile uint8_t bridge_rx_byte = 0;  /* UART4 ← ESP32-S3              */
+static volatile uint8_t arm_rx_byte    = 0;  /* UART1 ← Arm STM32             */
 
 /* ── Left VESC telemetry RX (UART5) ───────────────────────────────────── */
 static volatile uint8_t vesc_rx_byte  = 0;
@@ -157,11 +133,8 @@ static volatile uint8_t vesc_rx_byte  = 0;
 static volatile uint16_t adc_battery_raw = 0;
 
 /* ── Motor watchdog state (still consumed by ui.c for REMOTE badge) ───── */
-uint32_t lastCmdTime  = 0;   /* HAL_GetTick() of last valid DRIVE frame     */
+uint32_t lastCmdTime  = 0;   /* HAL_GetTick() of last valid drive frame     */
 uint8_t  motorRunning = 0;   /* 1 = motors currently commanded              */
-
-/* ── Slave-link liveness (last HEARTBEAT arrival on UART1) ────────────── */
-static uint32_t slave_last_seen_ms = 0;
 
 /* ── Keypad ───────────────────────────────────────────────────────────────*/
 static uint8_t pendingKey = KEY_NONE;
@@ -186,13 +159,8 @@ static void MX_TIM3_Init(void);
 static void MX_UART4_Init(void);
 static void MX_UART7_Init(void);
 
-/* SRR-CP local handlers (registered with COMM_RegisterHandler after init) */
-static void handle_drive       (uint8_t src, const uint8_t *p, uint8_t len);
-static void handle_drive_stop  (uint8_t src, const uint8_t *p, uint8_t len);
-static void handle_status_req  (uint8_t src, const uint8_t *p, uint8_t len);
-static void handle_heartbeat   (uint8_t src, const uint8_t *p, uint8_t len);
-static void handle_ping        (uint8_t src, const uint8_t *p, uint8_t len);
-static void handle_fault_report(uint8_t src, const uint8_t *p, uint8_t len);
+/* Local handler for SYS_CTRL_TO_BASE frames (registered after COMM_Init) */
+static void handle_base_frame(const comm_frame_t *frame);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -212,23 +180,24 @@ static void on_vesc_values(mc_values *val)
 /* ──────────────────────────────────────────────────────────────────────────
  * HAL_UART_RxCpltCallback — 1-byte interrupt completion from any UART.
  *
- *   UART4 (PI stream)    → COMM_FeedByte(COMM_STREAM_PI, byte)
- *   UART1 (SLAVE stream) → COMM_FeedByte(COMM_STREAM_SLAVE, byte)
- *   UART5 (Left VESC)    → bldc_interface packet decoder
+ *   UART4 (bridge stream) → COMM_FeedByte(COMM_STREAM_BRIDGE, byte)
+ *   UART1 (arm stream)    → COMM_FeedByte(COMM_STREAM_ARM, byte)
+ *   UART5 (Left VESC)     → bldc_interface packet decoder
  *
- * Everything else (handler dispatch, frame emission) happens in main loop.
+ * SYS_CTRL_TO_ARM and SYS_ARM_TO_CTRL frames are forwarded directly inside
+ * the parser; only SYS_CTRL_TO_BASE frames invoke the local handler below.
  * ────────────────────────────────────────────────────────────────────────── */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == UART4)
     {
-        COMM_FeedByte(COMM_STREAM_PI, pi_rx_byte);
-        HAL_UART_Receive_IT(&huart4, (uint8_t *)&pi_rx_byte, 1);
+        COMM_FeedByte(COMM_STREAM_BRIDGE, bridge_rx_byte);
+        HAL_UART_Receive_IT(&huart4, (uint8_t *)&bridge_rx_byte, 1);
     }
     else if (huart->Instance == USART1)
     {
-        COMM_FeedByte(COMM_STREAM_SLAVE, slave_rx_byte);
-        HAL_UART_Receive_IT(&huart1, (uint8_t *)&slave_rx_byte, 1);
+        COMM_FeedByte(COMM_STREAM_ARM, arm_rx_byte);
+        HAL_UART_Receive_IT(&huart1, (uint8_t *)&arm_rx_byte, 1);
     }
     else if (huart->Instance == UART5)
     {
@@ -238,92 +207,24 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
- * SRR-CP handler bodies (registered in main() after COMM_Init)
+ * Local handler for SYS_CTRL_TO_BASE frames.
+ * Decodes the unsigned uint16 joystick (centre = 32768) into a normalised
+ * [-1.0, +1.0] float pair and feeds VESC_JoystickDrive's tank-drive mixer.
+ * mode/zDir/yaw are ignored on Base.
  * ────────────────────────────────────────────────────────────────────────── */
-
-/* CMD_DRIVE — payload [x_byte, y_byte]. Both uint8, 128 = centre. */
-static void handle_drive(uint8_t src, const uint8_t *p, uint8_t len)
+static void handle_base_frame(const comm_frame_t *frame)
 {
-    (void)src;
-    if (len < 2) return;
-
-    uint8_t x_byte = p[0];
-    uint8_t y_byte = p[1];
-
-    float x = ((float)x_byte - 127.5f) / 127.5f;
-    float y = ((float)y_byte - 127.5f) / 127.5f;
+    /* Map [0..65535] with centre 32768 → [-1.0, +1.0]. Divisor is the
+     * larger half-range (32767) so full-positive maps cleanly to +1. */
+    float x = ((float)frame->x - (float)JOY_CENTRE) / 32767.0f;
+    float y = ((float)frame->y - (float)JOY_CENTRE) / 32767.0f;
+    if (x < -1.0f) x = -1.0f; else if (x > 1.0f) x = 1.0f;
+    if (y < -1.0f) y = -1.0f; else if (y > 1.0f) y = 1.0f;
 
     VESC_JoystickDrive(x, y);
 
     lastCmdTime  = HAL_GetTick();
     motorRunning = 1;
-}
-
-static void handle_drive_stop(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)src; (void)p; (void)len;
-    VESC_Stop();
-    motorRunning = 0;
-    lastCmdTime  = HAL_GetTick();
-}
-
-static void handle_status_req(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    if (len < 1) return;
-    uint8_t field = p[0];
-    uint8_t reply[3] = { field, 0, 0 };
-
-    switch (field) {
-        case FIELD_BATT_MV: {
-            uint16_t mv = (uint16_t)(BATTERY_GetVoltage() * 1000.0f);
-            reply[1] = (uint8_t)(mv >> 8);
-            reply[2] = (uint8_t)(mv & 0xFFu);
-            break;
-        }
-        case FIELD_BATT_PCT:
-            reply[1] = 0;
-            reply[2] = BATTERY_GetPercent();
-            break;
-        case FIELD_SLAVE_HB_AGE: {
-            uint32_t age = HAL_GetTick() - slave_last_seen_ms;
-            if (age > 65535u) age = 65535u;
-            reply[1] = (uint8_t)(age >> 8);
-            reply[2] = (uint8_t)(age & 0xFFu);
-            break;
-        }
-        case FIELD_FW_VERSION:
-            reply[1] = 1;   /* major */
-            reply[2] = 0;   /* minor */
-            break;
-        default:
-            /* Unknown field — return zeros so the requester sees "field=0". */
-            break;
-    }
-    COMM_Send(src, CMD_STATUS_REPLY, reply, 3);
-}
-
-static void handle_heartbeat(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)p; (void)len;
-    if (src == ADDR_ARM_EE) {
-        slave_last_seen_ms = HAL_GetTick();
-    }
-}
-
-static void handle_ping(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)p; (void)len;
-    COMM_Send(src, CMD_PONG, NULL, 0);
-}
-
-static void handle_fault_report(uint8_t src, const uint8_t *p, uint8_t len)
-{
-    (void)src;
-    if (len < 2) return;
-    /* Log the last slave fault; ui.c mirrors it. CRIT escalation is
-     * deferred until the fault severity table is populated. */
-    UI_State_t *ui = UI_StatePtr();
-    if (ui) ui->slave_fault_code = p[1];
 }
 
 /* USER CODE END 0 */
@@ -386,26 +287,21 @@ int main(void)
   /* ── Battery monitor ── */
   BATTERY_Init(&adc_battery_raw, 0.1754f, 12.6f, 9.0f);
 
-  /* ── SRR-CP protocol: bind streams + register local handlers ── */
+  /* ── Communication protocol: bind streams + register local handler ── */
   COMM_Init(&huart4, &huart1);
-  COMM_RegisterHandler(CMD_DRIVE,        handle_drive);
-  COMM_RegisterHandler(CMD_DRIVE_STOP,   handle_drive_stop);
-  COMM_RegisterHandler(CMD_STATUS_REQ,   handle_status_req);
-  COMM_RegisterHandler(CMD_HEARTBEAT,    handle_heartbeat);
-  COMM_RegisterHandler(CMD_PING,         handle_ping);
-  COMM_RegisterHandler(CMD_FAULT_REPORT, handle_fault_report);
+  COMM_SetLocalHandler(handle_base_frame);
 
   /* ── Start ADC1 circular DMA into the single-word battery slot ── */
   HAL_ADC_Start_DMA(&hadc1, (uint32_t *)&adc_battery_raw, 1);
 
   /* ── Arm UART interrupt receivers (byte-at-a-time) ── */
-  HAL_UART_Receive_IT(&huart4, (uint8_t *)&pi_rx_byte,    1);  /* ESP32-S3 bridge */
-  HAL_UART_Receive_IT(&huart1, (uint8_t *)&slave_rx_byte, 1);  /* Arm/EE slave    */
-  HAL_UART_Receive_IT(&huart5, (uint8_t *)&vesc_rx_byte,  1);  /* Left VESC       */
+  HAL_UART_Receive_IT(&huart4, (uint8_t *)&bridge_rx_byte, 1);  /* ESP32-S3 */
+  HAL_UART_Receive_IT(&huart1, (uint8_t *)&arm_rx_byte,    1);  /* Arm STM32 */
+  HAL_UART_Receive_IT(&huart5, (uint8_t *)&vesc_rx_byte,   1);  /* Left VESC */
 
   /* ── Debug banner over ST-Link serial ── */
   HAL_UART_Transmit(&huart3,
-      (uint8_t *)"[BASE] SRR-CP v1.0 online\r\n", 27, 50);
+      (uint8_t *)"[BASE] comm v2 online\r\n", 23, 50);
 
   /* USER CODE END 2 */
 
@@ -452,48 +348,6 @@ int main(void)
             lastPoll = now;
             VESC_RequestValues();
             bldc_interface_uart_run_timer();
-        }
-
-        /* ── 6. Slave heartbeat TX + liveness check ── */
-        static uint32_t last_hb_tx = 0;
-        if (now - last_hb_tx >= HEARTBEAT_PERIOD_MS) {
-            last_hb_tx = now;
-            uint32_t uptime_s = (now - UI_StatePtr()->bootTick) / 1000u;
-            uint8_t hb[2] = {
-                (uint8_t)((uptime_s >> 8) & 0xFFu),
-                (uint8_t)(uptime_s & 0xFFu)
-            };
-            COMM_Send(ADDR_ARM_EE, CMD_HEARTBEAT, hb, 2);
-        }
-
-        /* Mirror slave link state to UI. */
-        {
-            UI_State_t *ui = UI_StatePtr();
-            if (ui) ui->slave_last_seen_ms = slave_last_seen_ms;
-        }
-
-        /* ── 7. Telemetry push to Pi (STATUS_STREAM, 4 Hz) ── */
-        static uint32_t last_tele_tx = 0;
-        if (now - last_tele_tx >= TELEMETRY_PERIOD_MS) {
-            last_tele_tx = now;
-
-            uint16_t mv = (uint16_t)(BATTERY_GetVoltage() * 1000.0f);
-            uint8_t f[3] = { FIELD_BATT_MV,
-                             (uint8_t)(mv >> 8),
-                             (uint8_t)(mv & 0xFFu) };
-            COMM_Send(ADDR_PI, CMD_STATUS_STREAM, f, 3);
-
-            f[0] = FIELD_BATT_PCT;
-            f[1] = 0;
-            f[2] = BATTERY_GetPercent();
-            COMM_Send(ADDR_PI, CMD_STATUS_STREAM, f, 3);
-
-            uint32_t hb_age = now - slave_last_seen_ms;
-            if (hb_age > 65535u) hb_age = 65535u;
-            f[0] = FIELD_SLAVE_HB_AGE;
-            f[1] = (uint8_t)(hb_age >> 8);
-            f[2] = (uint8_t)(hb_age & 0xFFu);
-            COMM_Send(ADDR_PI, CMD_STATUS_STREAM, f, 3);
         }
 
     }   /* end while(1) */
@@ -975,9 +829,6 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(STEP_DIR_GPIO_Port, STEP_DIR_Pin, GPIO_PIN_RESET);
-
   /*Configure GPIO pin : USER_Btn_Pin */
   GPIO_InitStruct.Pin = USER_Btn_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
@@ -1017,13 +868,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USB_OverCurrent_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : STEP_DIR_Pin */
-  GPIO_InitStruct.Pin = STEP_DIR_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(STEP_DIR_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : USB_SOF_Pin USB_DM_Pin USB_DP_Pin */
   GPIO_InitStruct.Pin = USB_SOF_Pin|USB_DM_Pin|USB_DP_Pin;

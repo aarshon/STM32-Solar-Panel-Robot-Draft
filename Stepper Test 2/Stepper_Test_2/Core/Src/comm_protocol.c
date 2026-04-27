@@ -2,10 +2,20 @@
  * comm_protocol.c  —  Solar Robot fixed-frame protocol (v2)
  *
  * See comm_protocol.h for the wire format. Each UART stream owns one
- * 5-state parser. On a fully-validated frame the parser routes by sysID:
- * sysID 0x01 dispatches to the local handler; 0x02 and 0x03 are emitted
- * verbatim on the opposite UART without re-parsing.
+ * 5-state parser. On a fully-validated frame the parser routes by sysID.
+ *
+ * Role flag — defined per project so the same source compiles on Base and
+ * on Arm without behavioural divergence anywhere except the local-dispatch
+ * sysID:
+ *   - Base build  (default, flag absent) : sysID 0x01 dispatches locally;
+ *                                          0x02 forwarded to Arm UART;
+ *                                          0x03 forwarded to bridge UART.
+ *   - Arm build   (COMM_ROLE_ARM defined): sysID 0x02 dispatches locally;
+ *                                          0x01 / 0x03 paths inert (Arm has
+ *                                          only one UART).
  */
+
+#define COMM_ROLE_ARM   /* Stepper_Test_2 (Arm) build flag */
 
 #include "comm_protocol.h"
 #include <string.h>
@@ -98,6 +108,26 @@ static void route_frame(comm_stream_t src_stream, const parser_t *p)
 
     switch (sysID)
     {
+#ifdef COMM_ROLE_ARM
+        case SYS_CTRL_TO_ARM:
+            /* Arm build — local dispatch instead of forwarding. */
+            if (s_local_handler) {
+                comm_frame_t f;
+                decode_frame(p->raw, &f);
+                s_local_handler(&f);
+            }
+            break;
+
+        case SYS_CTRL_TO_BASE:
+            /* Not addressed to us — drop silently. */
+            break;
+
+        case SYS_ARM_TO_CTRL:
+            /* Forward upstream out the bridge UART (only one UART on Arm —
+             * if bridge_uart is NULL the emit_raw is a no-op). */
+            emit_raw(COMM_STREAM_BRIDGE, p->raw);
+            break;
+#else
         case SYS_CTRL_TO_BASE:
             if (s_local_handler) {
                 comm_frame_t f;
@@ -115,6 +145,7 @@ static void route_frame(comm_stream_t src_stream, const parser_t *p)
             /* Forward ARM→CTRL verbatim out the bridge UART. */
             emit_raw(COMM_STREAM_BRIDGE, p->raw);
             break;
+#endif
 
         default:
             /* Unknown sysID — count and drop. */

@@ -9,7 +9,10 @@
       "Read(//Users/aarshongeorge/.local/bin/**)",
       "Bash(npm list:*)",
       "Bash(xargs -I{} basename {})",
-      "Bash(xargs -I {} basename {})"
+      "Bash(xargs -I {} basename {})",
+      "Bash(git -C /Users/aarshongeorge/Documents/GitHub/STM32-Solar-Panel-Robot-Draft checkout -- integration-ian/Base-Ctrl-integration/Core/Src/main.c)",
+      "Bash(git -C /Users/aarshongeorge/Documents/GitHub/STM32-Solar-Panel-Robot-Draft status --short integration-ian/)",
+      "Bash(git -C /Users/aarshongeorge/Documents/GitHub/STM32-Solar-Panel-Robot-Draft status --short)"
     ]
   }
 }

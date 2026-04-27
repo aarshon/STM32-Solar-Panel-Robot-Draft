@@ -94,10 +94,6 @@ typedef struct {
     float         battery_voltage;
     uint8_t       battery_pct;
 
-    /* Slave-link state (ms since last heartbeat, last reported fault) */
-    uint32_t      slave_last_seen_ms;
-    uint8_t       slave_fault_code;
-
 } UI_State_t;
 
 /* Accessor for screen_*.c modules that need a peek at live state
