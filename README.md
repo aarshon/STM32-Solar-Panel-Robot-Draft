@@ -1,11 +1,12 @@
 # STM32 Solar Panel Robot — Integrated Firmware
 
-A differential-drive solar panel inspection robot.  A Raspberry Pi reads a physical joystick and streams control data over MQTT → an ESP8266 bridges it to UART → an STM32 Nucleo-F767ZI drives two VESC ESCs.  A 128×64 OLED displays live motor telemetry and Pi connection status.  A 3×4 keypad provides local fallback control. (Robotic Arm logic to be implemented later).
+A differential-drive solar panel inspection robot with an on-board stepper-driven panel-mount actuator and a planned 6-DOF robotic arm.  A Raspberry Pi reads a physical joystick and streams control data over MQTT → an ESP8266 bridges it to UART → an STM32 Nucleo-F767ZI drives two VESC ESCs (vehicle base) and a NEMA-17 stepper (panel-mount).  A 128×64 OLED displays live motor + stepper telemetry and Pi connection status.  A 3×4 keypad provides local fallback control and screen navigation.  The robotic arm (with inverse-kinematics planning) is the next subsystem under development — see [Future Work](#future-work--robotic-arm--inverse-kinematics).
 
 ---
 
 ## Table of Contents
 
+- [Repository Layout](#repository-layout)
 - [System Architecture](#system-architecture)
 - [Hardware List](#hardware-list)
 - [Communication Flow](#communication-flow)
@@ -16,16 +17,32 @@ A differential-drive solar panel inspection robot.  A Raspberry Pi reads a physi
   - [STM32 — Merged Firmware](#stm32--merged-firmware)
     - [Motor Driver (vesc.c / bldc_interface)](#motor-driver-vescc--bldc_interface)
     - [Joystick Parser & Ian's Mixing Math](#joystick-parser--ians-mixing-math)
+    - [Stepper Motor Subsystem (stepper.c / screen_stepper.c)](#stepper-motor-subsystem-stepperc--screen_stepperc)
     - [OLED UI (ui.c / ssd1306)](#oled-ui-uic--ssd1306)
     - [Keypad (keypad.c)](#keypad-keypadc)
     - [Safety Watchdog](#safety-watchdog)
+  - [Standalone Stepper Test Workspace](#standalone-stepper-test-workspace)
 - [Communication Protocol Reference](#communication-protocol-reference)
 - [OLED Screen Reference](#oled-screen-reference)
 - [Build & Flash Instructions](#build--flash-instructions)
 - [Raspberry Pi Setup](#raspberry-pi-setup)
 - [Operating Instructions](#operating-instructions)
-- [Future Work — Arm Integration](#future-work--arm-integration)
+- [Future Work — Robotic Arm + Inverse Kinematics](#future-work--robotic-arm--inverse-kinematics)
 - [Team & Credits](#team--credits)
+
+---
+
+## Repository Layout
+
+| Path | Status | Purpose |
+|---|---|---|
+| [Vehicle_Base/](Vehicle_Base/) | **Production** | Merged STM32 firmware: VESC drive, OLED UI, keypad, stepper, watchdog |
+| [Rasp Code/](Rasp%20Code/) | **Production** | Raspberry Pi pygame HMI + ESP8266 MQTT bridge sketch |
+| [Base-Ctrl/](Base-Ctrl/) | Reference | Original VESC-only firmware — the bldc_interface code lives here and was copied into Vehicle_Base |
+| [OLED Test Display/](OLED%20Test%20Display/) | Reference | Original SSD1306 driver test — superseded by Vehicle_Base/ssd1306 |
+| [Stepper_Test/](Stepper_Test/) | Reference | Bare bit-bang NEMA-17 driver — superseded by Vehicle_Base/stepper |
+| `EndEffectTesting.ino`, `GyroPlusServos.ino` | Reference | Arduino sketches from the arm team's bench rig |
+| **Standalone workspace** (outside repo, see [section](#standalone-stepper-test-workspace)) | **Development** | Dual-pot stepper + UI test bed. Will be merged into Vehicle_Base. |
 
 ---
 
@@ -101,8 +118,12 @@ A differential-drive solar panel inspection robot.  A Raspberry Pi reads a physi
 | WiFi bridge | ESP8266 click shield | MQTT → UART bridge |
 | Joystick ADC | MCP3008 (8-ch SPI ADC on Pi) | Joystick position reading |
 | Display | SSD1306 128×64 OLED (I2C) | Status display on robot |
-| Keypad | 3×4 membrane matrix keypad | Local manual control |
+| Keypad | 3×4 membrane matrix keypad | Local manual control + screen navigation |
+| Stepper motor | NEMA-17 17HE15-1504S (1.8°/step, 1.5 A/phase) | Panel-mount actuator (tilt or rotate) |
+| Stepper driver | TB6600 / DM542-style opto-isolated micro-step driver, 1/16 µstep | Drives the NEMA-17 |
+| Throttle pots | 2 × 10 kΩ linear potentiometers | Manual stepper CW / CCW velocity command |
 | Battery / UPS | UPS module (UART at /dev/serial0) | Power monitoring on Pi |
+| (Future) Arm | 6-DOF servo arm + end effector | Solar-panel handling — see [Future Work](#future-work--robotic-arm--inverse-kinematics) |
 
 ---
 
@@ -162,7 +183,7 @@ Telemetry path (200 ms polling):
 | USART3 | PD8 (TX), PD9 (RX) | 115200 | ST-Link (debug) | TX debug output |
 | I2C1 | PB8 (SCL), PB9 (SDA) | 400 kHz | SSD1306 OLED | Bidirectional |
 
-**Keypad matrix:**
+**Keypad matrix (Vehicle_Base):**
 
 | Signal | GPIO |
 |---|---|
@@ -173,6 +194,16 @@ Telemetry path (200 ms polling):
 | COL1 | PE14 |
 | COL2 | PG9 |
 | COL3 | PG14 |
+
+**Stepper subsystem (Vehicle_Base):**
+
+| Signal | GPIO | Notes |
+|---|---|---|
+| STEP+ | PB4 (TIM3_CH1, AF2) | 50 % duty PWM, 1 µs timer tick |
+| DIR+ | PC8 | HIGH = CW |
+| ENA+ | 3.3 V | Permanently energised — holds position |
+| CW pot wiper | PC0 (ADC1_IN10) | 0 → idle, 4095 → full CW throttle |
+| CCW pot wiper | PA3 (ADC1_IN3) | 0 → idle, 4095 → full CCW throttle |
 
 ---
 
@@ -324,6 +355,51 @@ Examples:
 | Spin right | +1.0 | 0.0 | +0.50 | -0.50 |
 | Forward-right | +0.5 | +0.7 | +0.50 (clamped) | +0.10 |
 
+#### Stepper Motor Subsystem (stepper.c / screen_stepper.c)
+
+**Files:** `Vehicle_Base/Core/Src/stepper.c`, `Core/Inc/stepper.h`, `Core/Src/screen_stepper.c`, `Core/Inc/screen_stepper.h`
+
+A NEMA-17 stepper drives the panel-mount actuator.  Two potentiometers act as a dual-throttle:
+turn the CW pot to spin clockwise, the CCW pot to spin counter-clockwise; both at rest = stopped.
+
+**Hardware-PWM step generation (Vehicle_Base):**
+- TIM3 CH1 generates STEP+ pulses in PWM mode, 50 % duty.  Zero CPU overhead per step once `ARR` is set.
+- Timer tick = 1 µs (96 MHz APB1×2 / prescaler 96).  `ARR = 1 000 000 / step_freq − 1`.
+- Auto-reload preload (ARPE) is enabled → frequency changes are glitch-free (no partial pulses).
+- `HAL_TIM_PWM_Start/Stop` is only called on running-state transitions — toggled via TIM3 CCER bit, not a separate flag.
+
+**Soft ramp + reversal safety:**
+- `s_current_freq` (signed Hz) is moved toward `s_target_freq` by at most `STEPPER_RAMP_STEP` (default 100 Hz) per call. Called every ~1 ms → 100 000 steps/s² limit.
+- If a target would cross zero (direction reversal), the controller clamps target to 0 first so the ramp decelerates fully before the DIR pin flips. Guarantees no skipped steps on reversal.
+- "Both pots active" is treated as a conflict and forces a stop — the user must release one pot before motion resumes.
+
+**ADC scan + DMA:**
+- ADC1 scan mode reads CW pot (IN10/PC0) then CCW pot (IN3/PA3).
+- DMA2 Stream 0 in circular mode keeps `adc_dma_buf[2]` live without CPU polling.
+
+**Public API (`stepper.h`):**
+```c
+void STEPPER_Init(void);                              // call after MX_TIM3_Init + MX_ADC1_Init
+void STEPPER_Update(uint16_t cw_adc, uint16_t ccw_adc); // call every ~1 ms with latest pot reads
+void STEPPER_Stop(void);                              // immediate halt, used on watchdog/E-stop
+void STEPPER_GetStatus(STEPPER_Status_t *out);        // freq, dir, pot raw, running flag for UI
+```
+
+**STEPPER screen layout:**
+```
+┌──────────────────────────────┐  128×64
+│ STEPPER         [RUN] / [STP]│  y=0   (title + run badge, inverted when pulsing)
+│──────────────────────────────│  y=11  (divider)
+│ Freq:+1234Hz                 │  y=13  (signed Hz: positive=CW)
+│ Dir: CW                      │  y=25  (CW / CCW / STP)
+│ CW :3200 ( 78%)              │  y=37  (CW pot raw + percent)
+│══════════════════════════════│  y=48  (divider)
+│ CCW: 120  [*]Back            │  y=50  (CCW pot raw + back hint)
+│ ████████████░░░░░░░░░░░░░░   │  y=59  (bar graph: |freq| / FREQ_MAX)
+└──────────────────────────────┘
+Keys:  [*] back to menu   [0] emergency stop
+```
+
 #### OLED UI (ui.c / ssd1306)
 
 **Files:** `Core/Src/ui.c`, `Core/Inc/ui.h`, `Core/Src/ssd1306.c`, `Core/Inc/ssd1306.h`  
@@ -334,11 +410,12 @@ Examples:
 | Screen | Key to enter | Description |
 |---|---|---|
 | SPLASH | — | Animated boot screen (1.5 s auto-advance) |
-| MAIN_MENU | Auto after splash | 4-item cursor menu |
-| STATUS_MONITOR | `[1]` or `[#]` | Live telemetry + Pi connection status |
-| MOTOR_CONTROL | `[2]` | Drive from keypad ([2]FWD [8]BCK [4]LEFT [6]RIGHT) |
-| ROBOT_ARM | `[3]` | Placeholder (arm team) |
-| INFO | `[4]` | Uptime, firmware version, fault log |
+| MAIN_MENU | Auto after splash | 5-item cursor menu |
+| STATUS_MONITOR | `[1]` or `[#]` | Live VESC telemetry + Pi connection status |
+| MOTOR_CONTROL | `[3]` | Drive from keypad ([2]FWD [8]BCK [4]LEFT [6]RIGHT) |
+| ROBOT_ARM | menu position 3 | Placeholder — see [Future Work](#future-work--robotic-arm--inverse-kinematics) |
+| STEPPER | `[9]` | Live stepper status (freq, dir, pot %, RUN/STP badge) |
+| INFO | `[7]` | Uptime, firmware version, fault log |
 
 **STATUS_MONITOR layout:**
 
@@ -391,6 +468,24 @@ Main loop checks every iteration:
 ```
 
 The VESC firmware has a **second independent watchdog** at ~1 second.  If the STM32 crashes or hangs, the VESC will still self-stop.
+
+The **stepper subsystem** has no Pi watchdog (the pots are local hardware), but `STEPPER_Stop()` is exposed so the UI's `[0]` key on the STEPPER screen acts as a manual E-stop.
+
+---
+
+### Standalone Stepper Test Workspace
+
+A separate CubeIDE project lives in **`STepper STM test/STM_MX_Projects1/`** (outside this repo, currently developed in `~/Downloads/`). It is a single-board test bed that exercises the dual-pot stepper control on a bare F767ZI Nucleo before merging back into `Vehicle_Base`.
+
+**Differences vs Vehicle_Base/stepper.c:**
+- **Bit-bang STEP** via TIM1 micro-delay rather than TIM3 PWM (the .ioc pin map didn't allocate TIM3 CH1).  Frequency is enforced by busy-waiting per half-period — main loop pace caps step quality during OLED redraws.
+- **Polled ADC** with per-read channel switching, no DMA. ADC1 IN0/IN1 (PA0/PA1).
+- **Stronger-pot-wins** direction logic (vs the Vehicle_Base "both-active = stop" conflict rule). Tolerates ground-bounce noise injected onto the idle pot when motor current spikes.
+- **DEADBAND raised to 500** (vs 150) for the same noise reason. Will drop back to ~150 once star-grounded.
+- **ENA pin moved to PD0** (Vehicle_Base PWM build keeps ENA wired to 3.3 V). PG14 reused as keypad COL3.
+- **Same UI / keypad / screen_stepper port** as Vehicle_Base — the public stepper API matches so `screen_stepper.c` works against either implementation unchanged.
+
+When the stepper test is folded back into Vehicle_Base it will replace the bit-bang core with the existing TIM3 PWM implementation; the dual-pot UX and noise-tolerant control law come back with it.
 
 ---
 
@@ -573,19 +668,129 @@ Connect a serial terminal (e.g. PuTTY, minicom) to the Nucleo's ST-Link virtual 
 
 ---
 
-## Future Work — Arm Integration
+## Future Work — Robotic Arm + Inverse Kinematics
 
-The arm team will publish servo angles to MQTT topic `"servos/angles"`:
-```json
-{"s1": 90.0, "s2": 45.0}
+The next major subsystem is a **6-DOF robotic arm** with a vacuum / clamp end effector that picks up and places solar panels.  Operator input is target Cartesian poses (where to go) — joint angles are derived on the fly via **inverse kinematics (IK)**.  This section captures the planned architecture so the arm team and the firmware/HMI teams stay aligned.
+
+### Why IK (vs raw servo angles)
+
+The current `EndEffectTesting.ino` and `GyroPlusServos.ino` bench sketches drive servos directly from joystick axes — fine for testing individual joints, painful for actually positioning the end-effector.  IK lets the operator command "go to (x, y, z) at angle θ" and the math figures out the joint angles.  Same Cartesian command produces the same end-effector pose regardless of arm pose history.
+
+### Pipeline
+
+```
+┌─────────────────────────┐
+│  Pi HMI (pygame)         │
+│  Operator input:         │
+│   · joystick → ΔX, ΔY    │
+│   · keypad → preset pose │
+│   · auto-pick from camera│
+└────────────┬────────────┘
+             │  Target pose:  (x, y, z, roll, pitch, yaw)  in robot-base frame
+             ▼
+┌─────────────────────────┐
+│  IK solver (Pi, Python)  │
+│  · DH-parameter model    │
+│  · Closed-form for 6-DOF │
+│    spherical wrist if    │
+│    geometry permits      │
+│  · ikpy / Pinocchio /    │
+│    custom analytic       │
+└────────────┬────────────┘
+             │  Joint vector:  θ = [θ1, θ2, θ3, θ4, θ5, θ6]  (degrees)
+             ▼
+┌─────────────────────────┐
+│  Pi MQTT publish         │
+│  topic: "arm/angles"     │
+│  payload: {"j": [θ1..θ6],│
+│             "grip": 0|1, │
+│             "ts": ms}     │
+│  rate: 50 Hz while moving│
+└────────────┬────────────┘
+             │  WiFi → ESP8266 → UART
+             ▼
+┌─────────────────────────┐
+│  STM32 Vehicle_Base      │
+│  · New module: arm.c     │
+│  · Subscribes to UART    │
+│    arm-frame parser      │
+│  · PWM out to 6 servos   │
+│    (TIM4 CH1-4 + TIM5    │
+│    CH1-2, all 50 Hz)     │
+│  · 500 ms watchdog →     │
+│    holds last pose       │
+│    on dropout (NOT zero, │
+│    to avoid arm collapse)│
+│  · SCREEN_ROBOT_ARM      │
+│    shows live joint      │
+│    angles + grip state   │
+└─────────────────────────┘
 ```
 
-The Pi HMI (`NotFinalRaspPiCode1.py`) already publishes this from the second joystick axis when in the Controls screen.
+### Where the math runs
 
-**Integration points for arm firmware:**
-- Subscribe to `"servos/angles"` on the Raspberry Pi's MQTT broker.
-- Implement a 500 ms timeout (same as vehicle base) to stop servos if MQTT connection drops — as Ian suggested: *"we could probably have the arm team do something similar on their end"*.
-- The STM32 `SCREEN_ROBOT_ARM` screen in `ui.c` is a placeholder ready for arm status display.
+**IK on the Pi, not the STM32.** Reasons:
+- Python has mature IK libraries (`ikpy`, `roboticstoolbox-python`) — no need to hand-roll trig.
+- The Pi already has float horsepower and is the only place we have a kinematic model file (URDF / DH table) to load.
+- STM32 stays "dumb": it's a real-time servo driver + safety layer.  Easier to certify, easier to debug.
+
+**Pose conventions:**
+- Origin at the arm's shoulder mount on the vehicle base.
+- +X forward (along vehicle heading), +Y left, +Z up.
+- Units: millimetres for translation, degrees for rotation.
+- All published values are end-effector poses in this **base frame**, not joint frames.
+
+### MQTT topic plan
+
+| Topic | Direction | Payload | Rate |
+|---|---|---|---|
+| `arm/target_pose` | Pi → (Pi solver) | `{"x": 250, "y": 0, "z": 320, "roll": 0, "pitch": -30, "yaw": 0}` | on operator input |
+| `arm/angles` | Pi → ESP8266 → STM32 | `{"j": [12.5, -45.0, 87.2, 0.0, 30.1, 0.0], "grip": 1, "ts": 1234}` | 50 Hz while moving, 1 Hz idle |
+| `arm/state` | STM32 → ESP8266 → Pi | `{"j_actual": [...], "stalled": false, "estop": false}` | 5 Hz (matches VESC telemetry cadence) |
+| `arm/preset` | Pi → solver | `{"name": "stow"}` | on keypad shortcut |
+
+The existing `servos/angles` topic from `NotFinalRaspPiCode1.py` is **superseded** by `arm/angles` — the new topic adds a checksum-able timestamp + grip channel + uses a flat `j` array so the schema is fixed-length.
+
+### STM32 firmware additions (planned modules)
+
+Files to add under `Vehicle_Base/Core/Src/` and `Core/Inc/`:
+
+| File | Responsibility |
+|---|---|
+| `arm.c` / `arm.h` | Joint angle → PWM duty for 6 servos, soft-ramp (max angular velocity per axis), hold-on-dropout watchdog |
+| `arm_frame.c` / `arm_frame.h` | Parse a binary arm frame from UART4 (extends the existing ESP8266 frame parser) — likely `[0xAB][len][angles[6]×int16][grip][ts][CRC8][0x55]` |
+| `screen_arm.c` / `screen_arm.h` | Replace the SCREEN_ROBOT_ARM placeholder with: live joint angles, grip state, watchdog status, IK solver heartbeat |
+| `safety.c` (optional) | Cross-subsystem E-stop: any of (vehicle watchdog | arm watchdog | keypad `[*]+[0]`) → stop everything |
+
+### Singularities + collision avoidance
+
+Two failure modes the IK layer must handle before the firmware ever sees a bad command:
+- **Wrist singularities** (joints 4 & 6 align): solver should return `null` and the Pi sends a `pose unreachable` toast to the HMI rather than dump a NaN onto MQTT.
+- **Self-collision / vehicle-base collision**: a forward-kinematics swept-volume check on the Pi rejects any target whose path penetrates the vehicle hull or the panel being carried.
+
+These belong on the Pi (math + URDF available there) — the STM32 trusts what arrives over UART.
+
+### Interaction with the vehicle base
+
+While the arm is in motion the operator should not also be commanding the vehicle.  The Pi HMI will:
+- Lock the joystick into "arm mode" while in the arm pages.
+- Continue publishing centre joystick (`{"x": 0.5, "y": 0.5}`) on `vehicle/base` so the watchdog stays satisfied (no spurious vehicle stop) but the wheels stay still.
+- During panel pickup, command vehicle to a hold using the existing centre payload.
+
+Long-term: a higher-level "task" layer on the Pi sequences `drive to panel → arm pickup → drive to install location → arm place` automatically. Out of scope for this firmware iteration.
+
+### Milestones
+
+| # | Milestone | Owner | Status |
+|---|---|---|---|
+| 1 | Single-servo PWM driver on STM32 (TIM4 CH1) | firmware | not started |
+| 2 | URDF / DH-table for the chosen arm geometry | arm team | not started |
+| 3 | Python IK proof-of-concept (`ikpy`, target → angles) | Pi team | not started |
+| 4 | `arm/angles` MQTT loop end-to-end (Pi → STM32, no real arm) | Pi + firmware | not started |
+| 5 | `arm.c` 6-channel PWM + soft-ramp + watchdog | firmware | not started |
+| 6 | SCREEN_ROBOT_ARM live state | firmware | not started |
+| 7 | Self-collision check on Pi | arm team | not started |
+| 8 | Full pickup-and-place demo | all | not started |
 
 ---
 

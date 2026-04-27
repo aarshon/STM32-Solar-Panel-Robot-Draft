@@ -35,7 +35,8 @@
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
 #include "vesc.h"
-#include "screen_stepper.h"
+#include "screen_power.h"
+#include "battery.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -49,6 +50,8 @@ extern uint32_t lastCmdTime;
  * Single global UI state
  * ========================================================================= */
 static UI_State_t ui;
+
+UI_State_t *UI_StatePtr(void) { return &ui; }
 
 /* =========================================================================
  * Helper: set screen and request redraw
@@ -193,7 +196,7 @@ static void ui_draw_main_menu(void)
         "1. Status Monitor",
         "2. Motor Control ",
         "3. Robot Arm     ",
-        "4. Stepper Motor ",
+        "4. Power / Battery",
         "5. Info          "
     };
     static const uint8_t row_y[5] = { 13, 23, 33, 43, 53 };
@@ -292,45 +295,32 @@ static void ui_draw_status_monitor(void)
         ssd1306_WriteString(buf, Font_7x10, White);
     }
 
-    /* ── Divider before connection status ── */
+    /* ── Divider before battery / link status ── */
     ssd1306_Line(0, 48, 127, 48, White);
 
-    /* ── Row 4: Pi / MQTT connection status ──
-     *
-     * lastCmdTime is updated by main.c every time a valid ESP8266 frame
-     * arrives.  If more than 500 ms have elapsed, the watchdog has fired
-     * and motors are stopped — we show "TIMEOUT" in inverted colour.
-     */
-    uint32_t now     = HAL_GetTick();
-    uint32_t elapsed = now - lastCmdTime;
+    /* ── Row 4: Battery voltage + SoC + Pi link ── */
+    uint32_t now      = HAL_GetTick();
+    uint32_t pi_age   = now - lastCmdTime;
+    uint8_t  pi_live  = (motorRunning || pi_age < 500u);
 
-    if (motorRunning || elapsed < 500u)
-    {
-        /* Pi is connected and sending joystick data */
-        snprintf(buf, sizeof(buf), "Pi:LIVE %4lums", (unsigned long)elapsed);
-        ssd1306_SetCursor(0, 50);
-        ssd1306_WriteString(buf, Font_6x8, White);
-    }
-    else
-    {
-        /* No command received recently — watchdog has fired */
-        ssd1306_FillRectangle(0, 49, 127, 57, White);   /* inverted background */
-        ssd1306_SetCursor(0, 50);
-        ssd1306_WriteString("Pi:TIMEOUT  STOPPED", Font_6x8, Black);
-    }
+    snprintf(buf, sizeof(buf), "Bat:%.1fV %3u%% Pi:%s",
+             ui.battery_voltage,
+             (unsigned)ui.battery_pct,
+             pi_live ? "OK " : "TMO");
+    ssd1306_SetCursor(0, 50);
+    ssd1306_WriteString(buf, Font_6x8, White);
 
-    /* ── Row 5: Control source indicator ── */
+    /* ── Row 5: Slave status ── */
+    uint32_t slv_age  = now - ui.slave_last_seen_ms;
+    const char *slv_state = "INIT";
+    if (ui.slave_last_seen_ms == 0)            slv_state = "INIT";
+    else if (slv_age > 1000u)                  slv_state = "TMO ";
+    else                                       slv_state = "OK  ";
+
+    snprintf(buf, sizeof(buf), "Slv:%s  CTRL:%s", slv_state,
+             motorRunning ? "REMOTE" : "IDLE");
     ssd1306_SetCursor(0, 57);
-    if (motorRunning)
-    {
-        /* Robot is being driven by the Raspberry Pi joystick */
-        ssd1306_WriteString("CTRL:REMOTE", Font_6x8, White);
-    }
-    else
-    {
-        /* Either idle or driven locally by keypad */
-        ssd1306_WriteString("CTRL:KEYPAD/IDLE", Font_6x8, White);
-    }
+    ssd1306_WriteString(buf, Font_6x8, White);
 
     ssd1306_UpdateScreen();
 }
@@ -479,8 +469,8 @@ static void ui_handle_main_menu(uint8_t key)
             break;
         case '1': ui_set_screen(SCREEN_STATUS_MONITOR); break;
         case '3': ui_set_screen(SCREEN_MOTOR_CONTROL);  break;
-        case '9': ui_set_screen(SCREEN_STEPPER);        break;
-        case '7': ui_set_screen(SCREEN_INFO);            break;
+        case '9': ui_set_screen(SCREEN_POWER);          break;
+        case '7': ui_set_screen(SCREEN_INFO);           break;
         default: break;
     }
 }
@@ -573,13 +563,11 @@ static void ui_handle_robot_arm(uint8_t key)
     }
 }
 
-/* Stepper screen — delegate to screen_stepper module, then translate its
- * action enum into a ui_set_screen() call.  This keeps screen_stepper.c
- * independent of UI_Screen_t. */
-static void ui_handle_stepper(uint8_t key)
+/* Power screen — delegate to screen_power module. */
+static void ui_handle_power(uint8_t key)
 {
-    ScreenStepper_Action_t act = ScreenStepper_HandleKey(key);
-    if (act == SCREEN_STEPPER_ACTION_BACK) {
+    ScreenPower_Action_t act = ScreenPower_HandleKey(key);
+    if (act == SCREEN_POWER_ACTION_BACK) {
         ui_set_screen(SCREEN_MAIN_MENU);
     }
 }
@@ -621,6 +609,10 @@ void UI_Update(uint8_t key)
 {
     uint32_t now = HAL_GetTick();
 
+    /* ---- Mirror live state owned by other modules ---------------------- */
+    ui.battery_voltage = BATTERY_GetVoltage();
+    ui.battery_pct     = BATTERY_GetPercent();
+
     /* ---- Fault flash (highest priority — overrides everything) --------- */
     if (ui.faultFlashCount > 0 &&
         (now - ui.lastFlashMs) >= 200u)
@@ -654,7 +646,7 @@ void UI_Update(uint8_t key)
             case SCREEN_STATUS_MONITOR: ui_handle_status_monitor(key); break;
             case SCREEN_MOTOR_CONTROL:  ui_handle_motor_control(key);  break;
             case SCREEN_ROBOT_ARM:      ui_handle_robot_arm(key);      break;
-            case SCREEN_STEPPER:        ui_handle_stepper(key);        break;
+            case SCREEN_POWER:          ui_handle_power(key);          break;
             case SCREEN_INFO:           ui_handle_info(key);           break;
             default: break;
         }
@@ -663,7 +655,7 @@ void UI_Update(uint8_t key)
     /* ---- Auto-refresh for live screens --------------------------------- */
     if (ui.currentScreen == SCREEN_STATUS_MONITOR ||
         ui.currentScreen == SCREEN_INFO           ||
-        ui.currentScreen == SCREEN_STEPPER)
+        ui.currentScreen == SCREEN_POWER)
     {
         if ((now - ui.lastStatusRedrawMs) >= 200u) {
             ui.lastStatusRedrawMs = now;
@@ -690,7 +682,7 @@ void UI_Update(uint8_t key)
         case SCREEN_STATUS_MONITOR: ui_draw_status_monitor(); break;
         case SCREEN_MOTOR_CONTROL:  ui_draw_motor_control();  break;
         case SCREEN_ROBOT_ARM:      ui_draw_robot_arm();      break;
-        case SCREEN_STEPPER:        ScreenStepper_Draw();     break;
+        case SCREEN_POWER:          ScreenPower_Draw();       break;
         case SCREEN_INFO:           ui_draw_info();           break;
         default: break;
     }

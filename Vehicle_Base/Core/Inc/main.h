@@ -111,7 +111,9 @@ void Error_Handler(void);
 #define SWO_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-
+/* Battery divider tap — PC3 ⟶ ADC1_IN13 (47k/10k divider, ratio 0.1754) */
+#define BAT_SENSE_Pin      GPIO_PIN_3
+#define BAT_SENSE_GPIO_Port GPIOC
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

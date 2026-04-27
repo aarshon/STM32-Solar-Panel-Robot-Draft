@@ -31,7 +31,7 @@
  *
  * UART ASSIGNMENTS
  * ────────────────
- *   UART4  (PA1  RX) ← ESP8266 joystick frames  [0xAA][x][y][0x55]
+ *   UART4  (PC11 RX) ← ESP32-S3 SRR-CP frames
  *   UART5  (PC12 TX, PC11 RX) ↔ Left  VESC ESC (bldc_interface + telemetry)
  *   UART7  (PE8  TX) → Right VESC ESC (bldc_interface, TX only)
  *   USART3 (PD8  TX) → ST-Link virtual COM (debug output)
@@ -68,7 +68,8 @@
 #include "keypad.h"
 #include "ui.h"
 #include "bldc_interface_uart.h"   /* bldc_interface_uart_run_timer() for packet timeout */
-#include "stepper.h"               /* NEMA 17 arm motor (TIM3 PWM + ADC pot) */
+#include "comm_protocol.h"
+#include "battery.h"
 #include <string.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -80,15 +81,19 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/** CMD_TIMEOUT_MS — stop motors if no ESP8266 frame arrives within this window.
- *  500 ms matches the VESC firmware's own keep-alive timeout.
- *  Ian noted the VESC will also self-stop after 1 s — this fires first. */
-#define CMD_TIMEOUT_MS   500u
+/** CMD_TIMEOUT_MS — stop motors if no DRIVE frame arrives within this window.
+ *  500 ms matches the VESC firmware's own keep-alive timeout. The VESC will
+ *  also self-stop after 1 s — this fires first. */
+#define CMD_TIMEOUT_MS      500u
 
-/* ESP8266 frame framing bytes (must match esp8266_mqtt.ino) */
-#define ESP_START_BYTE   0xAAu
-#define ESP_END_BYTE     0x55u
-#define ESP_FRAME_LEN    4u      /* [START][x_byte][y_byte][END] */
+/** Slave liveness: expect a HEARTBEAT frame at least every 1 s on UART1. */
+#define SLAVE_TIMEOUT_MS    1000u
+
+/** Base emits its own HEARTBEAT to the slave at 2 Hz. */
+#define HEARTBEAT_PERIOD_MS 500u
+
+/** Telemetry STATUS_STREAM push to Pi at 4 Hz. */
+#define TELEMETRY_PERIOD_MS 250u
 
 /* USER CODE END PD */
 
@@ -136,45 +141,30 @@ UART_HandleTypeDef huart3;
  * huart4 and huart7 were added manually (the .ioc only has UART5/USART3).
  * Placed here inside USER CODE so they survive CubeIDE code regeneration.
  * Their MSP (GPIO + clock init) is in MX_UART4_Init / MX_UART7_Init below. */
-UART_HandleTypeDef huart4;   /* UART4  (PA1  RX) — ESP8266 click shield       */
-UART_HandleTypeDef huart7;   /* UART7  (PE8  TX) — Right VESC ESC             */
+UART_HandleTypeDef huart4;   /* UART4  (PC11 RX / PC10 TX) — ESP32-S3 bridge */
+UART_HandleTypeDef huart7;   /* UART7  (PE8 TX)           — Right VESC ESC   */
 
-/* ── ESP8266 packet parser state ──────────────────────────────────────────
- * The ESP8266 sends 4-byte frames: [0xAA][x_byte][y_byte][0x55]
- * We receive one byte at a time via interrupt (huart4).
- * esp_rx_byte  : single-byte DMA target for UART4 ISR
- * esp_frame[]  : accumulates the current frame
- * esp_frame_idx: write index (0-3); resets on start byte or bad end byte
- * esp_cmd_ready: set to 1 by ISR when a valid frame has been latched
- * esp_cmd_x/y  : latched x,y bytes from the last valid frame (default = 128 = centre)
- */
-static volatile uint8_t esp_rx_byte   = 0;
-static volatile uint8_t esp_frame[4]  = {0};
-static volatile uint8_t esp_frame_idx = 0;
-static volatile uint8_t esp_cmd_ready = 0;
-static volatile uint8_t esp_cmd_x     = 128u;  /* centre = no movement */
-static volatile uint8_t esp_cmd_y     = 128u;
+/* ── SRR-CP single-byte RX staging for each UART stream ──────────────────
+ * Each byte fires HAL_UART_RxCpltCallback, which feeds the parser FSM in
+ * comm_protocol.c and re-arms the interrupt. */
+static volatile uint8_t pi_rx_byte    = 0;  /* UART4 ← ESP32-S3               */
+static volatile uint8_t slave_rx_byte = 0;  /* UART1 ← Arm/EE STM32           */
 
-/* ── Left VESC telemetry RX ───────────────────────────────────────────────
- * One byte at a time from UART5; fed to bldc_interface_uart_process_byte(). */
-static volatile uint8_t vesc_rx_byte = 0;
+/* ── Left VESC telemetry RX (UART5) ───────────────────────────────────── */
+static volatile uint8_t vesc_rx_byte  = 0;
 
-/* ── Motor watchdog state ─────────────────────────────────────────────────
- * These are also read by ui.c to show connection status on the OLED. */
-uint32_t lastCmdTime  = 0;   /* HAL_GetTick() of last valid ESP8266 frame */
-uint8_t  motorRunning = 0;   /* 1 = motors have been commanded to move     */
+/* ── ADC1 circular-DMA destination for battery sense (PC3, IN13) ──────── */
+static volatile uint16_t adc_battery_raw = 0;
+
+/* ── Motor watchdog state (still consumed by ui.c for REMOTE badge) ───── */
+uint32_t lastCmdTime  = 0;   /* HAL_GetTick() of last valid DRIVE frame     */
+uint8_t  motorRunning = 0;   /* 1 = motors currently commanded              */
+
+/* ── Slave-link liveness (last HEARTBEAT arrival on UART1) ────────────── */
+static uint32_t slave_last_seen_ms = 0;
 
 /* ── Keypad ───────────────────────────────────────────────────────────────*/
 static uint8_t pendingKey = KEY_NONE;
-
-/* ── Stepper / ADC DMA ────────────────────────────────────────────────────
- * CubeIDE generates MX_ADC1_Init() and MX_DMA_Init() from the .ioc.
- * This buffer is the destination for the DMA circular transfer:
- *   adc_dma_buf[0] = PC0 (ADC1_IN10) = CW  throttle pot  → Motor 1 clockwise
- *   adc_dma_buf[1] = PA3 (ADC1_IN3)  = CCW throttle pot  → Motor 1 counter-CW
- * Values are 12-bit [0, 4095]; rest (≤STEPPER_DEADBAND) = stopped.
- * The DMA keeps this buffer live without any CPU involvement. */
-uint16_t adc_dma_buf[2] = {0u, 0u};
 
 /* USER CODE END PV */
 
@@ -192,9 +182,17 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
-/* Forward declarations for manually-added UART init functions (not in .ioc) */
+/* Forward declarations for manually-added peripheral init (not in .ioc) */
 static void MX_UART4_Init(void);
 static void MX_UART7_Init(void);
+
+/* SRR-CP local handlers (registered with COMM_RegisterHandler after init) */
+static void handle_drive       (uint8_t src, const uint8_t *p, uint8_t len);
+static void handle_drive_stop  (uint8_t src, const uint8_t *p, uint8_t len);
+static void handle_status_req  (uint8_t src, const uint8_t *p, uint8_t len);
+static void handle_heartbeat   (uint8_t src, const uint8_t *p, uint8_t len);
+static void handle_ping        (uint8_t src, const uint8_t *p, uint8_t len);
+static void handle_fault_report(uint8_t src, const uint8_t *p, uint8_t len);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -212,66 +210,120 @@ static void on_vesc_values(mc_values *val)
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
- * HAL_UART_RxCpltCallback
- * Invoked automatically by HAL when the 1-byte interrupt transfer completes.
+ * HAL_UART_RxCpltCallback — 1-byte interrupt completion from any UART.
  *
- * UART4 handler — ESP8266 joystick frame parser
- *   Frame format: [0xAA][x_byte][y_byte][0x55]
- *   We synchronise on the start byte (0xAA) and validate the end byte (0x55).
- *   If the frame is corrupt (bad end byte) the parser resets and re-syncs.
+ *   UART4 (PI stream)    → COMM_FeedByte(COMM_STREAM_PI, byte)
+ *   UART1 (SLAVE stream) → COMM_FeedByte(COMM_STREAM_SLAVE, byte)
+ *   UART5 (Left VESC)    → bldc_interface packet decoder
  *
- * UART5 handler — Left VESC telemetry byte feed
- *   Each byte is forwarded to bldc_interface_uart_process_byte() which
- *   assembles the VESC response frame, validates CRC, then fires on_vesc_values().
+ * Everything else (handler dispatch, frame emission) happens in main loop.
  * ────────────────────────────────────────────────────────────────────────── */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    /* ── ESP8266 joystick frame parser (UART4) ── */
     if (huart->Instance == UART4)
     {
-        if (esp_frame_idx == 0)
-        {
-            /* Waiting for start byte — discard anything that isn't 0xAA */
-            if (esp_rx_byte == ESP_START_BYTE)
-            {
-                esp_frame[esp_frame_idx++] = esp_rx_byte;
-            }
-        }
-        else
-        {
-            /* Collecting bytes 1–3 of the frame */
-            esp_frame[esp_frame_idx++] = esp_rx_byte;
-
-            if (esp_frame_idx == ESP_FRAME_LEN)
-            {
-                /* Full frame received — validate end byte */
-                if (esp_frame[3] == ESP_END_BYTE)
-                {
-                    /* Valid frame: latch x and y and signal the main loop */
-                    esp_cmd_x     = esp_frame[1];
-                    esp_cmd_y     = esp_frame[2];
-                    esp_cmd_ready = 1;
-                }
-                /* Reset parser for next frame regardless of validity */
-                esp_frame_idx = 0;
-            }
-        }
-
-        /* Re-arm UART4 interrupt for the next byte */
-        HAL_UART_Receive_IT(&huart4, (uint8_t *)&esp_rx_byte, 1);
+        COMM_FeedByte(COMM_STREAM_PI, pi_rx_byte);
+        HAL_UART_Receive_IT(&huart4, (uint8_t *)&pi_rx_byte, 1);
     }
-
-    /* ── Left VESC telemetry (UART5 RX) ── */
-    if (huart->Instance == UART5)
+    else if (huart->Instance == USART1)
     {
-        /* Feed byte to bldc_interface packet decoder.
-         * When a complete COMM_GET_VALUES response is assembled, on_vesc_values()
-         * will be called automatically inside bldc_interface_uart_process_byte(). */
+        COMM_FeedByte(COMM_STREAM_SLAVE, slave_rx_byte);
+        HAL_UART_Receive_IT(&huart1, (uint8_t *)&slave_rx_byte, 1);
+    }
+    else if (huart->Instance == UART5)
+    {
         VESC_ProcessRxByte((uint8_t)vesc_rx_byte);
-
-        /* Re-arm UART5 RX interrupt for the next byte */
         HAL_UART_Receive_IT(&huart5, (uint8_t *)&vesc_rx_byte, 1);
     }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * SRR-CP handler bodies (registered in main() after COMM_Init)
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/* CMD_DRIVE — payload [x_byte, y_byte]. Both uint8, 128 = centre. */
+static void handle_drive(uint8_t src, const uint8_t *p, uint8_t len)
+{
+    (void)src;
+    if (len < 2) return;
+
+    uint8_t x_byte = p[0];
+    uint8_t y_byte = p[1];
+
+    float x = ((float)x_byte - 127.5f) / 127.5f;
+    float y = ((float)y_byte - 127.5f) / 127.5f;
+
+    VESC_JoystickDrive(x, y);
+
+    lastCmdTime  = HAL_GetTick();
+    motorRunning = 1;
+}
+
+static void handle_drive_stop(uint8_t src, const uint8_t *p, uint8_t len)
+{
+    (void)src; (void)p; (void)len;
+    VESC_Stop();
+    motorRunning = 0;
+    lastCmdTime  = HAL_GetTick();
+}
+
+static void handle_status_req(uint8_t src, const uint8_t *p, uint8_t len)
+{
+    if (len < 1) return;
+    uint8_t field = p[0];
+    uint8_t reply[3] = { field, 0, 0 };
+
+    switch (field) {
+        case FIELD_BATT_MV: {
+            uint16_t mv = (uint16_t)(BATTERY_GetVoltage() * 1000.0f);
+            reply[1] = (uint8_t)(mv >> 8);
+            reply[2] = (uint8_t)(mv & 0xFFu);
+            break;
+        }
+        case FIELD_BATT_PCT:
+            reply[1] = 0;
+            reply[2] = BATTERY_GetPercent();
+            break;
+        case FIELD_SLAVE_HB_AGE: {
+            uint32_t age = HAL_GetTick() - slave_last_seen_ms;
+            if (age > 65535u) age = 65535u;
+            reply[1] = (uint8_t)(age >> 8);
+            reply[2] = (uint8_t)(age & 0xFFu);
+            break;
+        }
+        case FIELD_FW_VERSION:
+            reply[1] = 1;   /* major */
+            reply[2] = 0;   /* minor */
+            break;
+        default:
+            /* Unknown field — return zeros so the requester sees "field=0". */
+            break;
+    }
+    COMM_Send(src, CMD_STATUS_REPLY, reply, 3);
+}
+
+static void handle_heartbeat(uint8_t src, const uint8_t *p, uint8_t len)
+{
+    (void)p; (void)len;
+    if (src == ADDR_ARM_EE) {
+        slave_last_seen_ms = HAL_GetTick();
+    }
+}
+
+static void handle_ping(uint8_t src, const uint8_t *p, uint8_t len)
+{
+    (void)p; (void)len;
+    COMM_Send(src, CMD_PONG, NULL, 0);
+}
+
+static void handle_fault_report(uint8_t src, const uint8_t *p, uint8_t len)
+{
+    (void)src;
+    if (len < 2) return;
+    /* Log the last slave fault; ui.c mirrors it. CRIT escalation is
+     * deferred until the fault severity table is populated. */
+    UI_State_t *ui = UI_StatePtr();
+    if (ui) ui->slave_fault_code = p[1];
 }
 
 /* USER CODE END 0 */
@@ -316,9 +368,11 @@ int main(void)
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
-  /* ── Initialise peripherals not in the .ioc (UART4 = ESP8266, UART7 = right VESC) */
-  MX_UART4_Init();
-  MX_UART7_Init();
+  /* ── Initialise peripherals not in the .ioc ── */
+  MX_UART4_Init();       /* PI bridge link — UART4 (PC11 RX, PC10 TX) 460800 */
+  MX_UART7_Init();       /* Right VESC TX                                    */
+  /* ADC1 is initialised by the auto-generated MX_ADC1_Init() called from
+   * main() above; the battery-sense override lives in its USER CODE 2 block. */
 
   /* ── Initialise display, keypad, and OLED UI state machine ── */
   ssd1306_Init();
@@ -329,19 +383,29 @@ int main(void)
   VESC_Init();
   VESC_SetValuesCallback(on_vesc_values);
 
-  /* ── Initialise stepper arm motor and start ADC DMA ── */
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_dma_buf, 2);
-  STEPPER_Init();
+  /* ── Battery monitor ── */
+  BATTERY_Init(&adc_battery_raw, 0.1754f, 12.6f, 9.0f);
 
-  /* ── Arm UART interrupt receivers ──
-   * Each HAL_UART_Receive_IT call enables the RX interrupt for 1 byte.
-   * After each byte arrives, HAL_UART_RxCpltCallback re-arms the interrupt. */
-  HAL_UART_Receive_IT(&huart4, (uint8_t *)&esp_rx_byte,  1);  /* ESP8266  */
-  HAL_UART_Receive_IT(&huart5, (uint8_t *)&vesc_rx_byte, 1);  /* left VESC telemetry */
+  /* ── SRR-CP protocol: bind streams + register local handlers ── */
+  COMM_Init(&huart4, &huart1);
+  COMM_RegisterHandler(CMD_DRIVE,        handle_drive);
+  COMM_RegisterHandler(CMD_DRIVE_STOP,   handle_drive_stop);
+  COMM_RegisterHandler(CMD_STATUS_REQ,   handle_status_req);
+  COMM_RegisterHandler(CMD_HEARTBEAT,    handle_heartbeat);
+  COMM_RegisterHandler(CMD_PING,         handle_ping);
+  COMM_RegisterHandler(CMD_FAULT_REPORT, handle_fault_report);
+
+  /* ── Start ADC1 circular DMA into the single-word battery slot ── */
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)&adc_battery_raw, 1);
+
+  /* ── Arm UART interrupt receivers (byte-at-a-time) ── */
+  HAL_UART_Receive_IT(&huart4, (uint8_t *)&pi_rx_byte,    1);  /* ESP32-S3 bridge */
+  HAL_UART_Receive_IT(&huart1, (uint8_t *)&slave_rx_byte, 1);  /* Arm/EE slave    */
+  HAL_UART_Receive_IT(&huart5, (uint8_t *)&vesc_rx_byte,  1);  /* Left VESC       */
 
   /* ── Debug banner over ST-Link serial ── */
   HAL_UART_Transmit(&huart3,
-      (uint8_t *)"[BASE] Solar Robot firmware started\r\n", 38, 50);
+      (uint8_t *)"[BASE] SRR-CP v1.0 online\r\n", 27, 50);
 
   /* USER CODE END 2 */
 
@@ -353,16 +417,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-        /* ── 0. Stepper arm update ──
-         *
-         * STEPPER_Update() reads the latest DMA-filled ADC values and:
-         *   • Picks target freq from whichever throttle pot is past deadband
-         *       adc_dma_buf[0] → CW  pot  (PC0 / ADC1_IN10)
-         *       adc_dma_buf[1] → CCW pot  (PA3 / ADC1_IN3)
-         *   • Ramps current frequency toward target (avoids missed steps)
-         *   • Updates TIM3 ARR/CCR1 for the new frequency in hardware
-         *   • Toggles DIR only when motor is at rest (safe reversal) */
-        STEPPER_Update(adc_dma_buf[0], adc_dma_buf[1]);
+        uint32_t now = HAL_GetTick();
 
         /* ── 1. Keypad scan ── */
         pendingKey = KEYPAD_Scan();
@@ -370,74 +425,75 @@ int main(void)
         /* ── 2. OLED UI update ── */
         UI_Update(pendingKey);
 
-        /* ── 3. Process joystick command from ESP8266 ──
-         *
-         * esp_cmd_ready is set to 1 by HAL_UART_RxCpltCallback (UART4 ISR).
-         * We clear it here and apply Ian's tank-drive mixing math:
-         *
-         *   x = steering  (negative = left,  positive = right)
-         *   y = throttle  (negative = back,  positive = forward)
-         *
-         *   left_duty  = y + x     (left motor)
-         *   right_duty = y - x     (right motor)
-         *
-         * Both values are in [-1, +1] and are passed to VESC_JoystickDrive()
-         * which clamps and scales them by VESC_MAX_DUTY_FLOAT (0.50) before
-         * sending to the VESC ESCs.
-         *
-         * The uint8 [0, 255] bytes from ESP8266 are converted to float [-1, +1]:
-         *   float = (byte - 127.5) / 127.5
-         *   centre byte (128) → 0.008 ≈ 0  (dead-band handled by ESP8266 ADC)
-         */
-        if (esp_cmd_ready)
-        {
-            esp_cmd_ready = 0;         /* clear flag before reading values */
-            lastCmdTime   = HAL_GetTick();
-            motorRunning  = 1;
+        /* ── 3. Battery sense IIR (rate-limited to 1 Hz internally) ── */
+        BATTERY_Update();
 
-            /* Convert [0, 255] → [-1.0, +1.0]; 127.5 is the exact midpoint */
-            float x = ((float)esp_cmd_x - 127.5f) / 127.5f;  /* steering  */
-            float y = ((float)esp_cmd_y - 127.5f) / 127.5f;  /* throttle  */
-
-            /* Apply Ian's mixing and send to both VESCs */
-            VESC_JoystickDrive(x, y);
-
-            /* Sync UI: mark motor as running so status screen shows REMOTE */
-            UI_ForceRedraw();
+        /* Auto-stop drive on battery critical (no latch — reasserts each loop
+         * while critical, joystick takes over again as soon as voltage recovers). */
+        if (BATTERY_IsCritical() && motorRunning) {
+            VESC_Stop();
+            motorRunning = 0;
         }
 
-        /* ── 4. Motor watchdog ──
-         *
-         * If the Raspberry Pi stops sending commands (e.g. disconnected from
-         * WiFi, crash, or script stopped), we must stop the motors automatically.
-         * CMD_TIMEOUT_MS = 500 ms; VESC firmware has a secondary 1 s timeout.
-         */
-        if (motorRunning && (HAL_GetTick() - lastCmdTime > CMD_TIMEOUT_MS))
+        /* ── 4. Motor watchdog — no DRIVE frame for CMD_TIMEOUT_MS → stop. */
+        if (motorRunning && (now - lastCmdTime > CMD_TIMEOUT_MS))
         {
             VESC_Stop();
             motorRunning = 0;
-            UI_ForceRedraw();   /* triggers OLED to show "Pi: TIMEOUT" */
-
+            UI_ForceRedraw();
             HAL_UART_Transmit(&huart3,
                 (uint8_t *)"[BASE] Watchdog: motor stop\r\n", 29, 20);
         }
 
-        /* ── 5. VESC telemetry poll (every 200 ms) ──
-         *
-         * VESC_RequestValues() sends a COMM_GET_VALUES request to the left VESC.
-         * The response arrives byte-by-byte on UART5 and is decoded in the ISR
-         * via VESC_ProcessRxByte().  Once a full frame is decoded, on_vesc_values()
-         * calls UI_TelemetryUpdate() to refresh the OLED status screen.
-         */
+        /* ── 5. VESC telemetry poll (5 Hz) ── */
         static uint32_t lastPoll = 0;
-        if (HAL_GetTick() - lastPoll >= 200u)
+        if (now - lastPoll >= 200u)
         {
-            lastPoll = HAL_GetTick();
+            lastPoll = now;
             VESC_RequestValues();
-
-            /* Keep bldc_interface packet timeout counter alive (~1 kHz ideal,
-             * but called here at 5 Hz is sufficient for a 2-count timeout) */
             bldc_interface_uart_run_timer();
+        }
+
+        /* ── 6. Slave heartbeat TX + liveness check ── */
+        static uint32_t last_hb_tx = 0;
+        if (now - last_hb_tx >= HEARTBEAT_PERIOD_MS) {
+            last_hb_tx = now;
+            uint32_t uptime_s = (now - UI_StatePtr()->bootTick) / 1000u;
+            uint8_t hb[2] = {
+                (uint8_t)((uptime_s >> 8) & 0xFFu),
+                (uint8_t)(uptime_s & 0xFFu)
+            };
+            COMM_Send(ADDR_ARM_EE, CMD_HEARTBEAT, hb, 2);
+        }
+
+        /* Mirror slave link state to UI. */
+        {
+            UI_State_t *ui = UI_StatePtr();
+            if (ui) ui->slave_last_seen_ms = slave_last_seen_ms;
+        }
+
+        /* ── 7. Telemetry push to Pi (STATUS_STREAM, 4 Hz) ── */
+        static uint32_t last_tele_tx = 0;
+        if (now - last_tele_tx >= TELEMETRY_PERIOD_MS) {
+            last_tele_tx = now;
+
+            uint16_t mv = (uint16_t)(BATTERY_GetVoltage() * 1000.0f);
+            uint8_t f[3] = { FIELD_BATT_MV,
+                             (uint8_t)(mv >> 8),
+                             (uint8_t)(mv & 0xFFu) };
+            COMM_Send(ADDR_PI, CMD_STATUS_STREAM, f, 3);
+
+            f[0] = FIELD_BATT_PCT;
+            f[1] = 0;
+            f[2] = BATTERY_GetPercent();
+            COMM_Send(ADDR_PI, CMD_STATUS_STREAM, f, 3);
+
+            uint32_t hb_age = now - slave_last_seen_ms;
+            if (hb_age > 65535u) hb_age = 65535u;
+            f[0] = FIELD_SLAVE_HB_AGE;
+            f[1] = (uint8_t)(hb_age >> 8);
+            f[2] = (uint8_t)(hb_age & 0xFFu);
+            COMM_Send(ADDR_PI, CMD_STATUS_STREAM, f, 3);
         }
 
     }   /* end while(1) */
@@ -556,42 +612,19 @@ static void MX_ADC1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN ADC1_Init 2 */
-
-  /* Fix 1 — rank 2 should sample PA3 (ADC1_IN3) for the CCW throttle pot.
-   * CubeIDE leaves rank 2 = ADC_CHANNEL_10 (same as rank 1) by default,
-   * and the .ioc still has PC3/IN13 wired — override to ADC_CHANNEL_3. */
-  {
-      ADC_ChannelConfTypeDef sfix = {0};
-      sfix.Channel      = ADC_CHANNEL_3;
-      sfix.Rank         = ADC_REGULAR_RANK_2;
-      sfix.SamplingTime = ADC_SAMPLETIME_480CYCLES;
-      if (HAL_ADC_ConfigChannel(&hadc1, &sfix) != HAL_OK)
-      {
-          Error_Handler();
-      }
-  }
-
-  /* Fix 2 — MX_USART2_UART_Init() (called earlier) puts PA3 into AF7
-   * (USART2_RX).  USART2 is unused in this firmware, so steal PA3 back
-   * and re-configure it as an analog input for ADC1_IN3. */
-  {
-      __HAL_RCC_GPIOA_CLK_ENABLE();
-      GPIO_InitTypeDef pa3 = {0};
-      pa3.Pin  = GPIO_PIN_3;
-      pa3.Mode = GPIO_MODE_ANALOG;
-      pa3.Pull = GPIO_NOPULL;
-      HAL_GPIO_Init(GPIOA, &pa3);
-  }
-
-  /* Fix 3 — CubeIDE set DMAContinuousRequests = DISABLE, which stops the
-   * DMA after the first 2 conversions.  Enable it so circular DMA keeps
-   * the adc_dma_buf[] refreshed indefinitely. */
+  /* Override Cube's dual-rank (stepper-era) config — only rank 1 = IN13 (PC3,
+   * battery divider) is used, with circular DMA into adc_battery_raw.
+   * HAL_ADC_Init on a non-RESET state re-applies the register config without
+   * re-running MspInit, so the DMA linkage set up above is preserved. */
+  hadc1.Init.ScanConvMode          = DISABLE;
+  hadc1.Init.NbrOfConversion       = 1;
   hadc1.Init.DMAContinuousRequests = ENABLE;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
-      Error_Handler();
-  }
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) Error_Handler();
 
+  sConfig.Channel      = ADC_CHANNEL_13;
+  sConfig.Rank         = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_56CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) Error_Handler();
   /* USER CODE END ADC1_Init 2 */
 
 }
@@ -1014,35 +1047,41 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /**
- * MX_UART4_Init — ESP8266 click shield RX (PA1, 115200 baud).
- * Not generated by CubeIDE because UART4 is not in the .ioc.
- * Receives 4-byte joystick frames: [0xAA][x][y][0x55]
+ * MX_UART4_Init — ESP32-S3 bridge link (PC11 RX, PC10 TX, 460800 baud 8N1).
+ *
+ * Not in the .ioc so the GPIO alternate-function setup happens here.
+ *
+ * Why PC11 instead of PA1: on the Nucleo-F767ZI the on-board LAN8742A PHY
+ * drives 50 MHz REFCLK onto PA1 by hardware, regardless of whether the
+ * STM32 ETH peripheral is configured. Using PA1 as UART RX caused
+ * continuous spurious RXNE → ISR storm → main loop never ran.
+ * UART4_RX is also routable to PC11 (AF8); same alternate function.
  */
 static void MX_UART4_Init(void)
 {
-    /* HAL_UART_MspInit() has no UART4 case (not in .ioc), so configure
-     * clock, GPIO, and NVIC manually here before calling HAL_UART_Init(). */
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitTypeDef gpio = {0};
 
     __HAL_RCC_UART4_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    /* PA1 → UART4_RX (AF8).
-     * NOTE: PA1 is also ETH_REF_CLK on the Nucleo.  If Ethernet is disabled
-     * in the .ioc this is safe.  If Ethernet is needed, move UART4_RX to
-     * PC11 (also AF8) and update the ESP8266 wiring accordingly. */
-    GPIO_InitStruct.Pin       = GPIO_PIN_1;
-    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull      = GPIO_PULLUP;
-    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    /* PC11 — UART4_RX */
+    gpio.Pin       = GPIO_PIN_11;
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_PULLUP;                 /* idle-high for bare 3V3 link */
+    gpio.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = GPIO_AF8_UART4;
+    HAL_GPIO_Init(GPIOC, &gpio);
 
-    HAL_NVIC_SetPriority(UART4_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(UART4_IRQn);
+    /* PC10 — UART4_TX */
+    gpio.Pin       = GPIO_PIN_10;
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_NOPULL;
+    gpio.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = GPIO_AF8_UART4;
+    HAL_GPIO_Init(GPIOC, &gpio);
 
     huart4.Instance            = UART4;
-    huart4.Init.BaudRate       = 115200;
+    huart4.Init.BaudRate       = 460800;
     huart4.Init.WordLength     = UART_WORDLENGTH_8B;
     huart4.Init.StopBits       = UART_STOPBITS_1;
     huart4.Init.Parity         = UART_PARITY_NONE;
@@ -1055,31 +1094,30 @@ static void MX_UART4_Init(void)
     {
         Error_Handler();
     }
+
+    /* NVIC — priority 5 matches UART5/UART7. */
+    HAL_NVIC_SetPriority(UART4_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(UART4_IRQn);
 }
 
 /**
  * MX_UART7_Init — Right VESC ESC TX (PE8, 115200 baud).
- * Not generated by CubeIDE because UART7 is not in the .ioc.
  * TX only; right-motor telemetry is not collected.
  */
 static void MX_UART7_Init(void)
 {
-    /* HAL_UART_MspInit() has no UART7 case (not in .ioc), so configure
-     * clock and GPIO manually here before calling HAL_UART_Init(). */
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitTypeDef gpio = {0};
 
     __HAL_RCC_UART7_CLK_ENABLE();
     __HAL_RCC_GPIOE_CLK_ENABLE();
 
-    /* PE8 → UART7_TX (AF8).  TX only — right VESC receives no telemetry. */
-    GPIO_InitStruct.Pin       = GPIO_PIN_8;
-    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull      = GPIO_NOPULL;
-    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF8_UART7;
-    HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-    /* No NVIC needed for TX-only — HAL_UART_Transmit_IT() enables TX interrupt
-     * internally when called. */
+    /* PE8 — UART7_TX */
+    gpio.Pin       = GPIO_PIN_8;
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_NOPULL;
+    gpio.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = GPIO_AF8_UART7;
+    HAL_GPIO_Init(GPIOE, &gpio);
 
     huart7.Instance            = UART7;
     huart7.Init.BaudRate       = 115200;
@@ -1095,6 +1133,9 @@ static void MX_UART7_Init(void)
     {
         Error_Handler();
     }
+
+    HAL_NVIC_SetPriority(UART7_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(UART7_IRQn);
 }
 
 /* USER CODE END 4 */

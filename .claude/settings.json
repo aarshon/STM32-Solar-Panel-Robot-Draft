@@ -4,7 +4,11 @@
       "WebFetch(domain:github.com)",
       "Bash(gh repo *)",
       "Bash(curl -sL https://raw.githubusercontent.com/ilbeylia/StepperMotorLib/main/Stm32_Step_Motor/Core/Inc/StepMotor_lib.h)",
-      "Bash(curl -sL https://raw.githubusercontent.com/ilbeylia/StepperMotorLib/main/Stm32_Step_Motor/Core/Src/StepMotor_lib.c)"
+      "Bash(curl -sL https://raw.githubusercontent.com/ilbeylia/StepperMotorLib/main/Stm32_Step_Motor/Core/Src/StepMotor_lib.c)",
+      "Bash(unzip -l EndEffectGyroSTM32.zip)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\aarsh\\OneDrive\\Desktop\\GitHub Respository\\Solar Panel Installation\\STM32-Solar-Panel-Robot-Draft\\Vehicle_Base\\Core\\Src"
     ]
   }
 }

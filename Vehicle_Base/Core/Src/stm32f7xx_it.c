@@ -232,7 +232,7 @@ void DMA2_Stream0_IRQHandler(void)
 /* USER CODE BEGIN 1 */
 
 /**
- * @brief UART4 global interrupt — ESP8266 joystick frame receiver.
+ * @brief UART4 global interrupt — ESP32-S3 bridge RX byte.
  *        HAL calls HAL_UART_RxCpltCallback() in main.c when 1 byte arrives.
  */
 void UART4_IRQHandler(void)
