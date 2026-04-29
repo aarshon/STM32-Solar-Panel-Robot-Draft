@@ -32,11 +32,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define XUP	0x228
-#define XDN 0x1F6
-#define YUP 0x207
-#define YDN 0x1D5
-#define JMX 0x3FF
+#define XUP	0x028C //652
+#define XDN 0x0192 //402
+#define YUP 0x026B //619
+#define YDN 0x0171 //369
+#define JMX 0x03FF //1023
 
 #define S1 0x41
 #define S2 0x5A
@@ -155,6 +155,7 @@ int main(void)
   float time_cur;
   float time_las = 0.0;
   uint16_t x_in, y_in;
+  int step = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -179,18 +180,22 @@ int main(void)
 	  }
 
 	  //stepper polling loop
-	  if (time_cur - time_las >= 0.01) {
+	  if (time_cur - time_las >= 0.005) {
 		  time_las = time_cur;
-		  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
-		  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
-		  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
+		  //HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+		  //HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
+		  //HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
 
 		  if (x_in > XUP) {//output cw rotation
 			  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, 0);
 			  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_1);
+
+
 		  } else if (x_in < XDN) {//output ccw rotation
 			  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0, 1);
 			  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_1);
+
+
 		  }
 
 		  if (y_in > YUP) {//output extend
@@ -202,13 +207,17 @@ int main(void)
 				  step = 0;
 			  }
 			  step++;
+
+
 		  } else if (y_in < YDN) {//output retract
 			  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_2, 1);
 			  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_4, 1);
 			  HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_3);
 			  if (step == 2) {HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_5);}
 			  step--;
-			  if (step != 0 || step != 1 || step != 2) {step = 2;}
+			  if (step != 0 && step != 1 && step != 2) {step = 2;}
+
+
 		  }
 	  }
     /* USER CODE END WHILE */
@@ -240,7 +249,7 @@ void SystemClock_Config(void)
   * in the RCC_OscInitTypeDef structure.
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 4;

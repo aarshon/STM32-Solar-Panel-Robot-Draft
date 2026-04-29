@@ -60,8 +60,8 @@ all: main-build
 main-build: arm-com.elf secondary-outputs
 
 # Tool invocations
-arm-com.elf arm-com.map: $(OBJS) $(USER_OBJS) C:\Users\808kb\STM32CubeIDE\workspace_integration\arm-com\STM32F767ZITX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "arm-com.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\808kb\STM32CubeIDE\workspace_integration\arm-com\STM32F767ZITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="arm-com.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+arm-com.elf arm-com.map: $(OBJS) $(USER_OBJS) C:\Users\808kb\OneDrive\Documents\GitHub\STM32-Solar-Panel-Robot-Draft\integration-ian\arm-com\STM32F767ZITX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "arm-com.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\808kb\OneDrive\Documents\GitHub\STM32-Solar-Panel-Robot-Draft\integration-ian\arm-com\STM32F767ZITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="arm-com.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
